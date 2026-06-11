@@ -1,0 +1,6 @@
+mujoco>=3.6.0
+pin>=3.9.0
+numpy
+scipy
+qpsolvers[quadprog]
+matplotlib

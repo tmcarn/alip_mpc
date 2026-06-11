@@ -1,6 +1,6 @@
 import numpy as np
 import scipy.linalg
-from scipy.optimize import minimize
+from qpsolvers import solve_qp
 import matplotlib.pyplot as plt
 import pinocchio as pin
 
@@ -65,9 +65,6 @@ class ALIP_MPC:
         self.gamma = make_gamma(self.Ad, self.B, H)
         self.Q = make_Q(H, q_L=1.0)
         
-        # box constraints
-        self.u_lim = 0.3
-        self.step_width_min = 0.1
 
     def get_bounds(self, stance_foot, u_lim=0.8, step_width_min=0.2): # 0.2
         bounds = []
@@ -108,17 +105,13 @@ class ALIP_MPC:
         P_scaled = P / scale
         q_scaled = q / scale
 
-        U0 = np.zeros(2 * self.H)  # warm start
-        result = minimize(
-            fun=lambda U: 0.5 * U @ P_scaled @ U + q_scaled @ U,
-            x0=U0,
-            method='SLSQP',
-            bounds=self.get_bounds(stance_foot),
-        )
+        # box bounds become lb/ub arrays instead of a list of tuples
+        lb = np.array([b[0] for b in self.get_bounds(stance_foot)])
+        ub = np.array([b[1] for b in self.get_bounds(stance_foot)])
 
-        print("MPC Results: ", result.x[:2])
-        
-        return result.x[:2]
+        U = solve_qp(P_scaled, q_scaled, lb=lb, ub=ub, solver="quadprog")
+        print("MPC Results: ", U[:2])
+        return U[:2]
     
 #     def run_mpc(self, x0, v_x_des, v_y_des, steps=10):
 #         curr_world_u = np.zeros(2)

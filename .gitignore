@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.conda/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# MuJoCo / sim artifacts
+*.mp4
+*.png
+*.npz
+mjkey.txt
+
+# Logs / outputs
+*.log
+runs/
+outputs/

@@ -1,0 +1,56 @@
+# ALIP-MPC Bipedal Walker
+
+A from-scratch ALIP-based MPC footstep planner with whole-body control (WBC)
+for a 3D 5-DOF-per-leg biped, simulated in MuJoCo.
+
+## Overview
+
+The control stack has three layers:
+
+1. **ALIP-MPC** (`alip_mpc.py`) — Angular Momentum Linear Inverted Pendulum
+   model predictive control. Plans footstep locations over a horizon by
+   tracking a desired angular-momentum periodic orbit, solved as a QP.
+2. **Swing trajectory** (`swingtraj.py`) — generates the swing-foot reference
+   path (linear in xy, sinusoidal lift in z) between footstep targets.
+3. **Whole-body control** (`wbc.py`) — solves for joint accelerations and
+   contact forces via QP subject to the floating-base dynamics and a stance
+   contact constraint, then recovers joint torques by inverse dynamics.
+
+A time-based finite-state machine (`run.py`) switches stance every `T_s`
+seconds and ties the three layers together.
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `alip_mpc.py`  | ALIP model + MPC QP footstep planner |
+| `wbc.py`       | Whole-body controller (QP inverse dynamics) |
+| `swingtraj.py` | Swing-foot trajectory generator |
+| `env.py`       | MuJoCo environment wrapper |
+| `debug_viz.py` | Viewer debug geoms (foot frames, swing target, plan) |
+| `constants.py` | Shared parameters |
+| `run.py`       | Integrated walking loop |
+| `xml_files/`   | MuJoCo MJCF model |
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+```
+
+## Run
+
+```bash
+mjpython run.py     # mjpython needed for the passive viewer on macOS
+```
+
+## Issues
+- WBC is not correctly tracking the stepping trajectory, it lags behind
+- Contact schedule swiches before swing foot touches down, then immediately slams into ground as the "stance foot", causing instability
+
+## Notes
+
+- The Pinocchio model is built off of the MuJoCo
+  directly via `pin.buildModelsFromMJCF`.
+- MuJoCo and Pinocchio use different quaternion orderings
+  (`[w,x,y,z]` vs `[x,y,z,w]`); configurations are converted at the boundary.
