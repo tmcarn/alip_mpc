@@ -80,17 +80,24 @@ class WalkingController:
             self.phase_counter = 0
             # the foot that was swinging has landed -> becomes new stance foot and vice versa
             self.stance_foot, self.swing_foot = self.swing_foot, self.stance_foot
+
+            print(f"\n SWING: {self.swing_foot} \t STANCE: {self.stance_foot} \n")
+
             # Only on impact, calculate next footstep location
             x = self.get_ALIP_state(q, dq)
             u = self.mpc.solve_mpc(x, self.cmd_vel, self.stance_foot)
             new_stance_pos = self.get_foot_pos(self.stance_foot)
             self.final_swing_target = new_stance_pos + np.array([u[0], u[1], 0.0])
             self.final_swing_target[2] = 0.1
-            self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target) # (Initial Position , Final Position)
 
+            # self.final_swing_target = self.get_foot_pos(self.swing_foot) # Used for standing still
+            self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target) # (Initial Position , Final Position)
+        
+        print("Swing Foot Position:", self.get_foot_pos(self.swing_foot))
         # --- per-tick swing target ---
         t_phase = self.phase_counter * self.dt
         self.swing_target = self.swing_planner.get_target(t_phase)
+        print("Swing Foot Target:", self.swing_target)
 
         # Caluclate tau, based on swing foot and swing target
         # --- WBC ---
@@ -121,12 +128,12 @@ def run():
 
     controller = WalkingController(pin_model, pin_data, dt, mpc, wbc, swing)
 
-    print(controller.get_foot_pos("left_foot"), controller.get_foot_pos("right_foot"))
+    print("START:", controller.get_foot_pos("left_foot"), controller.get_foot_pos("right_foot"))
 
     viz = DebugVisualizer(env.viewer)
 
     
-    for i in range(10000):
+    for i in range(20000):
         q, dq = env.get_joint_state()
         pin.computeAllTerms(pin_model, pin_data, q, dq)
         pin.updateFramePlacements(pin_model, pin_data)

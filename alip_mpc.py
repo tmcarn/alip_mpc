@@ -66,7 +66,7 @@ class ALIP_MPC:
         self.Q = make_Q(H, q_L=1.0)
         
 
-    def get_bounds(self, stance_foot, u_lim=0.8, step_width_min=0.2): # 0.2
+    def get_bounds(self, stance_foot, u_lim=0.5, step_width_min=0.2): # 0.2
         bounds = []
         # sign for step 0: swing foot is opposite the stance foot
         swing_sign = +1 if stance_foot == "right_foot" else -1
@@ -110,7 +110,7 @@ class ALIP_MPC:
         ub = np.array([b[1] for b in self.get_bounds(stance_foot)])
 
         U = solve_qp(P_scaled, q_scaled, lb=lb, ub=ub, solver="quadprog")
-        print("MPC Results: ", U[:2])
+        # print("MPC Results: ", U[:2])
         return U[:2]
     
 #     def run_mpc(self, x0, v_x_des, v_y_des, steps=10):

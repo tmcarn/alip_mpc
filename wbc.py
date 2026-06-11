@@ -15,11 +15,17 @@ class WholeBodyController:
         self.stance_id = None
         self.torso_id = self.model.getFrameId("torso")
 
-        self.com_desired_height = 1.45
+        self.com_desired_height = 1.30
 
         # PD Controller gains
-        self.Kp = 100.0 * 5
-        self.Kd = 20.0 * 5
+        # swing foot: move fast, light damping
+        self.Kp_swing, self.Kd_swing = 800.0, 40.0
+        # torso orientation: stiff, well-damped
+        self.Kp_torso, self.Kd_torso = 100.0, 20.0
+        # CoM height: moderate
+        self.Kp_com, self.Kd_com = 100.0, 20.0
+        # Swing Foot Orientation
+        self.Kp_swing_rot, self.Kd_swing_rot = 100.0, 20.0
 
     def compute_jacobians(self, q, dq, stance_foot):
         # Get frame IDs
@@ -37,6 +43,10 @@ class WholeBodyController:
         J_swing = pin.getFrameJacobian(self.model, self.data, self.swing_id, pin.LOCAL_WORLD_ALIGNED)[:3, :]
         Jdot_swing = pin.getFrameJacobianTimeVariation(self.model, self.data, self.swing_id, pin.LOCAL_WORLD_ALIGNED)[:3, :]
 
+        # swing foot orientation (rotational rows 3:6)
+        J_swing_rot = pin.getFrameJacobian(self.model, self.data, self.swing_id, pin.LOCAL_WORLD_ALIGNED)[3:, :]
+        Jdot_swing_rot = pin.getFrameJacobianTimeVariation(self.model, self.data, self.swing_id, pin.LOCAL_WORLD_ALIGNED)[3:, :]
+
         # torso orientation (rotational rows 3:6)
         J_torso = pin.getFrameJacobian(self.model, self.data, self.torso_id, pin.LOCAL_WORLD_ALIGNED)[3:, :]
         Jdot_torso = pin.getFrameJacobianTimeVariation(self.model, self.data, self.torso_id, pin.LOCAL_WORLD_ALIGNED)[3:, :]
@@ -47,9 +57,9 @@ class WholeBodyController:
         Jdot_com_dq = self.data.acom[0]  # shape (3,) — this is J_com_dot @ dq
         Jdot_com_z_dq = Jdot_com_dq[2:3]  # z component only
        
-        return  J_stance, Jdot_stance, J_swing, Jdot_swing, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq
+        return  J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq
     
-    def pd_control(self, q, dq, target_pos, J_swing, J_torso):
+    def pd_control(self, q, dq, target_pos, J_swing, J_torso, J_swing_rot):
         # Compute current swing foot position and velocity
         swing_foot_pos = self.data.oMf[self.swing_id].translation  # world frame position (3,)
         swing_foot_vel = J_swing @ dq  # world frame velocity (3,)
@@ -59,9 +69,7 @@ class WholeBodyController:
         pos_error = target_pos - swing_foot_pos
         # print("pos_error:", pos_error)
         vel_error = -swing_foot_vel  # desired velocity is zero at target
-        xdd_swing_des = self.Kp * pos_error + self.Kd * vel_error
-
-        # print("Desired xdd: ", xdd_swing_des)
+        xdd_swing_des = self.Kp_swing * pos_error + self.Kd_swing * vel_error
 
         # current torso orientation as rotation matrix
         R_torso = self.data.oMf[self.torso_id].rotation
@@ -74,7 +82,7 @@ class WholeBodyController:
         orientation_error = pin.log3(R_error)  # shape (3,)
         # current torso angular velocity
         omega_torso = J_torso @ dq  # shape (3,)
-        alpha_torso_des = self.Kp * orientation_error - self.Kd * omega_torso
+        alpha_torso_des = self.Kp_torso * orientation_error - self.Kd_torso * omega_torso
 
         # Current CoM position and velocity
         com_pos = self.data.com[0]  # world frame CoM position (3,)
@@ -82,13 +90,21 @@ class WholeBodyController:
         # Desired accelerations (PD control)
         height_error = self.com_desired_height - com_pos[2]
         com_vel_z = com_vel[2]
-        zdd_com_des = self.Kp * height_error - self.Kd * com_vel_z
+        zdd_com_des = self.Kp_com * height_error - self.Kd_com * com_vel_z
 
-        return xdd_swing_des, alpha_torso_des, zdd_com_des
+        # swing foot orientation: keep foot level (identity target)
+        R_swing = self.data.oMf[self.swing_id].rotation
+        R_swing_des = np.eye(3)               # level foot
+        R_err_swing = R_swing_des @ R_swing.T
+        swing_orient_err = pin.log3(R_err_swing)
+        omega_swing = J_swing_rot @ dq
+        alpha_swing_des = self.Kp_swing_rot * swing_orient_err - self.Kd_swing_rot * omega_swing
+
+        return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des
     
     def compute_control(self, q, dq, target_pos, stance_foot):
-        J_stance, Jdot_stance, J_swing, Jdot_swing, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq = self.compute_jacobians(q, dq, stance_foot)
-        xdd_swing_des, alpha_torso_des, zdd_com_des = self.pd_control(q, dq, target_pos, J_swing, J_torso)
+        J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq = self.compute_jacobians(q, dq, stance_foot)
+        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des = self.pd_control(q, dq, target_pos, J_swing, J_torso, J_swing_rot)
 
         # Formulate and solve QP to get q̈ and contact forces λ
         D = self.data.M
@@ -111,14 +127,15 @@ class WholeBodyController:
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
 
-        w1, w2, w3, w4 = 1.0, 1.0, 1.0, 0.01
+        w1, w2, w3, w4, w5 = 100.0, 1.0, 1.0, 1.0, 0.01
 
         # P matrix
         P = np.zeros((19, 19))
         P[0:16, 0:16] += w1 * J_swing.T @ J_swing      # swing foot
         P[0:16, 0:16] += w2 * J_torso.T @ J_torso      # torso orientation
         P[0:16, 0:16] += w3 * J_com_z.T @ J_com_z      # CoM height
-        P[0:16, 0:16] += w4 * np.eye(16)               # regularization
+        P[0:16, 0:16] += w4 * J_swing_rot.T @ J_swing_rot
+        P[0:16, 0:16] += w5 * np.eye(16)               # regularization
         P[16:19, 16:19] += 1e-6 * np.eye(3)  # small regularization on contact forces
 
         # q vector
@@ -126,7 +143,8 @@ class WholeBodyController:
         q_vec[0:16] += w1 * J_swing.T @ (Jdot_swing @ dq - xdd_swing_des)
         q_vec[0:16] += w2 * J_torso.T @ (Jdot_torso @ dq - alpha_torso_des)
         q_vec[0:16] += w3 * J_com_z.T @ (Jdot_com_z_dq - zdd_com_des)
-        q_vec[0:16] += w4 * np.zeros(16) # regularization — zero desired acceleration
+        q_vec[0:16] += w4 * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
+        q_vec[0:16] += w5 * np.zeros(16) # regularization — zero desired acceleration
 
         # inequality constraint: lambda_z >= 0
         G_ineq = np.zeros((1, 19))
@@ -141,12 +159,20 @@ class WholeBodyController:
         # print("lambda_contact:", lambda_contact)
 
         foot_acc_commanded = J_swing @ qdd + Jdot_swing @ dq
-        
-        # # what the QP actually commanded for the swing foot
-        # print("desired swing acc:", xdd_swing_des)
-        # print("commanded swing acc:", foot_acc_commanded)
-        # print("stance constraint foot:", self.stance_id, " swing foot:", self.swing_id)
 
+        # com = self.data.com[0]          # world-frame CoM position (3,)
+        # com_xy = com[:2]
+        # stance_xy = self.data.oMf[self.stance_id].translation[:2]
+        # print("CoM-stance lateral offset:", com_xy - stance_xy)
+        # print("lambda (contact force):", lambda_contact)
+
+        swing_vel = J_swing @ dq
+        print("Swing Vel (Jacobian):", swing_vel)
+        
+        # what the QP actually commanded for the swing foot
+        print("desired swing acc:", xdd_swing_des)
+        print("commanded swing acc:", foot_acc_commanded)
+        print()
         # ---- solve for tau ---- #
         tau_full = D @ qdd + C @ dq + G - J_stance.T @ lambda_contact
         tau = tau_full[6:]  # actuated joints only
