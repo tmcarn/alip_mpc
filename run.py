@@ -147,7 +147,7 @@ def run():
             footstep_plan=controller.final_swing_target,          # magenta sphere (the MPC landing spot)
         )
         env.render()
-        time.sleep(dt*10)
+        time.sleep(dt*1)
 
     env.close()
 
