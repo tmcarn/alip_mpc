@@ -52,14 +52,14 @@ class WalkingController:
             com_vel = self.pin_data.vcom[0]
 
             # Compute CoM Angular Momentum
-            pin.computeCentroidalMomentum(self.wbc.model, self.wbc.data, q, dq)
-            L_com = self.pin_data.hg.angular  # angular momentum about CoM (3,)
+            pin.computeCentroidalMomentum(self.pin_model, self.pin_data, q, dq)
+            L_com = self.pin_data.hg.angular
 
             # Compute Lx, Ly using: L_contact = L_com + (r x m * v_com)
             m = self.pin_data.mass[0]  # total mass of robot
 
             # stance foot position
-            stance_foot_pos = self.pin_data.oMf[self.stance_id].translation  # world frame (3,)
+            stance_foot_pos = self.get_foot_pos(self.stance_foot)
             r = com_pos - stance_foot_pos  # vector from stance foot to CoM
             
             L_contact = L_com + np.cross(r, m * com_vel)  # total angular momentum about contact point
@@ -88,7 +88,7 @@ class WalkingController:
             u = self.mpc.solve_mpc(x, self.cmd_vel, self.stance_foot)
             new_stance_pos = self.get_foot_pos(self.stance_foot)
             self.final_swing_target = new_stance_pos + np.array([u[0], u[1], 0.0])
-            self.final_swing_target[2] = 0.1
+            self.final_swing_target[2] = 0.025
 
             # self.final_swing_target = self.get_foot_pos(self.swing_foot) # Used for standing still
             self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target) # (Initial Position , Final Position)
@@ -147,7 +147,7 @@ def run():
             footstep_plan=controller.final_swing_target,          # magenta sphere (the MPC landing spot)
         )
         env.render()
-        time.sleep(dt*1)
+        time.sleep(dt*10)
 
     env.close()
 
