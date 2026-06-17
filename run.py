@@ -9,6 +9,7 @@ from alip_mpc import ALIP_MPC
 from wbc import WholeBodyController
 
 from debug_viz import DebugVisualizer
+from logger import Logger
 
 class WalkingController:
     def __init__(self, model, data, dt, mpc, wbc, swing_planner):
@@ -38,6 +39,7 @@ class WalkingController:
 
         self.final_swing_target = None
         self.swing_target = None
+        self.com_pos = None
 
 
 
@@ -47,12 +49,11 @@ class WalkingController:
             '''
             # Compute CoM position and velocity
             pin.forwardKinematics(self.pin_model, self.pin_data, q, dq)
+            pin.computeCentroidalMomentum(self.pin_model, self.pin_data, q, dq)
             pin.centerOfMass(self.pin_model, self.pin_data, q)
             com_pos = self.pin_data.com[0]
+            self.com_pos = com_pos
             com_vel = self.pin_data.vcom[0]
-
-            # Compute CoM Angular Momentum
-            pin.computeCentroidalMomentum(self.pin_model, self.pin_data, q, dq)
             L_com = self.pin_data.hg.angular
 
             # Compute Lx, Ly using: L_contact = L_com + (r x m * v_com)
@@ -85,6 +86,7 @@ class WalkingController:
 
             # Only on impact, calculate next footstep location
             x = self.get_ALIP_state(q, dq)
+            print("ALIP STATE: ", x)
             u = self.mpc.solve_mpc(x, self.cmd_vel, self.stance_foot)
             new_stance_pos = self.get_foot_pos(self.stance_foot)
             self.final_swing_target = new_stance_pos + np.array([u[0], u[1], 0.0])
@@ -93,11 +95,11 @@ class WalkingController:
             # self.final_swing_target = self.get_foot_pos(self.swing_foot) # Used for standing still
             self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target) # (Initial Position , Final Position)
         
-        print("Swing Foot Position:", self.get_foot_pos(self.swing_foot))
+        # print("Swing Foot Position:", self.get_foot_pos(self.swing_foot))
         # --- per-tick swing target ---
         t_phase = self.phase_counter * self.dt
         self.swing_target = self.swing_planner.get_target(t_phase)
-        print("Swing Foot Target:", self.swing_target)
+        # print("Swing Foot Target:", self.swing_target)
 
         # Caluclate tau, based on swing foot and swing target
         # --- WBC ---
@@ -132,6 +134,8 @@ def run():
 
     viz = DebugVisualizer(env.viewer)
 
+    logger = Logger()
+
     
     for i in range(20000):
         q, dq = env.get_joint_state()
@@ -145,7 +149,11 @@ def run():
             env.foot_body,                 # {"right_foot": id, "left_foot": id}
             swing_target=controller.swing_target,     # yellow sphere
             footstep_plan=controller.final_swing_target,          # magenta sphere (the MPC landing spot)
+            com=controller.com_pos,
+            torso_body_id=controller.torso_id,
+            draw_world=True
         )
+
         env.render()
         time.sleep(dt*10)
 

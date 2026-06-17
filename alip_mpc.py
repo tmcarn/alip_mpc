@@ -3,6 +3,7 @@ import scipy.linalg
 from qpsolvers import solve_qp
 import matplotlib.pyplot as plt
 import pinocchio as pin
+from constants import *
 
 
 def make_A(m, g, z_H):
@@ -50,6 +51,7 @@ class ALIP_MPC:
         self.m = data.mass[0]
         self.g = 9.81
         self.z_H = data.com[0][2]  # CoM height above ground
+        self.W = STEP_WIDTH
 
         print(f"ALIP parameters: z_H={self.z_H:.2f} m")
         
@@ -79,14 +81,68 @@ class ALIP_MPC:
                 bounds.append((-u_lim, -step_width_min))
         return bounds
     
-    def make_X_ref(self, cmd_vel, m, z_H, H):
-        X_ref = np.zeros((4*H,))
-        for i in range(H):
-            X_ref[4*i + 0] = 0
-            X_ref[4*i + 1] = 0
-            X_ref[4*i + 2] = -m * z_H * cmd_vel[1]
-            X_ref[4*i + 3] = m * z_H * cmd_vel[0]
+    # def make_X_ref(self, cmd_vel, m, z_H, H):
+    #     X_ref = np.zeros((4*H,))
+    #     l = np.sqrt(self.g / z_H)
+    #     for i in range(H):
+    #         X_ref[4*i + 0] = (1 / m * z_H * l) * 
+    #         X_ref[4*i + 1] = 0
+    #         X_ref[4*i + 2] = -m * z_H * cmd_vel[1]
+    #         X_ref[4*i + 3] = m * z_H * cmd_vel[0]
 
+    #     print("ALIP DES:", X_ref[0:4])
+
+    #     return X_ref
+
+    def lateral_orbit_closed_form(self, sigma):
+        '''
+        Gibson et al. eq (17), lateral entries only (yc, Lx), for the
+        zero-lateral-velocity periodic orbit. sigma = +1 / -1 selects stance side.
+        Returns (yc_des, Lx_des) for a single step.
+        '''
+        ell = np.sqrt(self.g / self.z_H)
+        th = np.tanh(ell * self.T_s / 2.0)
+        yc_des = -0.5 * sigma * self.W
+        Lx_des = 0.5 * sigma * self.m * self.z_H * ell * self.W * th
+        return yc_des, Lx_des
+
+
+    # def lateral_orbit_expm(self, m, z_H, T_s, W, g=9.81):
+    #     '''
+    #     Independent derivation: solve (Phi + I) z0 = [w, 0] for the touchdown
+    #     lateral state, w = +W (current-stance convention). Returns (yc, Lx)
+    #     for sigma = +1; the closed form should match up to the sigma sign.
+    #     '''
+    #     A_lat = np.array([[0.0,   -1.0 / (m * z_H)],
+    #                     [-m * g, 0.0           ]])
+    #     Phi = scipy.linalg.expm(A_lat * T_s)
+    #     z0 = np.linalg.solve(Phi + np.eye(2), np.array([W, 0.0]))
+    #     return z0[0], z0[1]   # yc, Lx
+
+
+    def make_X_ref(self, cmd_vel, stance_foot):
+        '''
+        Build the MPC reference over horizon H.
+        State per step: [xc, yc, Lx, Ly].
+        cmd_vel = [vx, vy]; for stepping in place pass [0, 0].
+        Lateral sway alternates each step; sagittal travel rides on Ly_des.
+        '''
+        # sigma for the FIRST horizon step, keyed to current stance foot.
+        sigma0 = +1.0 if stance_foot == "left_foot" else -1.0
+
+        Ly_des = self.m * self.z_H * cmd_vel[0]          # forward command (0 for in-place)
+        xc_des = 0.0                            # in-place: zero (scales with Ly otherwise)
+
+        X_ref = np.zeros((4 * H,))
+        for i in range(H):
+            sigma = sigma0 * ((-1.0) ** i)      # flip each step across horizon
+            yc_des, Lx_des = self.lateral_orbit_closed_form(sigma)
+            X_ref[4 * i + 0] = xc_des
+            X_ref[4 * i + 1] = yc_des
+            X_ref[4 * i + 2] = Lx_des
+            X_ref[4 * i + 3] = Ly_des
+
+        print("ALIP DES:", X_ref[0:4])
         return X_ref
     
     def step_transition(self, x, u):
@@ -96,7 +152,7 @@ class ALIP_MPC:
         return self.Ad_small @ x
 
     def solve_mpc(self, x0, cmd_vel, stance_foot):
-        X_ref = self.make_X_ref(cmd_vel, self.m, self.z_H, self.H)
+        X_ref = self.make_X_ref(cmd_vel, stance_foot)
         b = self.phi @ x0 - X_ref
         P = 2 * self.gamma.T @ self.Q @ self.gamma
         q = 2 * self.gamma.T @ self.Q @ b
@@ -153,22 +209,15 @@ class ALIP_MPC:
 #         plt.show()
 
 # if __name__ == "__main__":
-#     m = 10.0
-#     g = 9.81
-#     z_H = 1.45
 #     T_s = 0.35
-#     H = 10
 
-#     model = ALIP_MPC(m, g, z_H, T_s, H)
-#     # x0 = np.ones(4) * 0.1  # initial state: small offset from origin
-#     # x0 = np.zeros(4)  # initial state: at origin
-    
-#     v_x_des = 0.0
-#     v_y_des = 0.2
-#     x0 = np.array([0, 0, m * z_H * v_y_des, m * z_H * v_x_des])  # L_y negative
+#     model = ALIP_MPC(T_s)
 
-#     com_traj, foot_traj = model.run_mpc(x0, v_x_des, v_y_des, steps=10)
-#     model.plot_steps(com_traj, foot_traj)
+#     m, z_H, T_s, W = 30.0, 0.8, 0.35, 0.2   # your real values
+#     cf = model.lateral_orbit_closed_form(m, z_H, T_s, W, sigma=+1.0)
+#     ex = model.lateral_orbit_expm(m, z_H, T_s, W)
+#     print("closed form (sigma=+1):", cf)
+#     print("expm solve   (w=+W)   :", ex)
 
 
 

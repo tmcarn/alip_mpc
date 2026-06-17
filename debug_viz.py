@@ -44,10 +44,26 @@ class DebugVisualizer:
         )
 
     def add_swing_target(self, pos):
-        self.add_sphere(pos, radius=0.035, rgba=(1.0, 0.9, 0.1, 1.0))  # yellow
+        self.add_sphere(pos, radius=0.06, rgba=(1.0, 0.9, 0.1, 1.0))  # yellow
 
     def add_footstep_plan(self, pos):
         self.add_sphere(pos, radius=0.04, rgba=(1.0, 0.2, 0.8, 0.7))   # magenta
+
+    def add_com(self, pos):
+        pos[2] = 0.0
+        self.add_sphere(pos, radius=0.02, rgba=(1.0, 0, 0, 1.0)) # red
+
+    def add_world_frame(self, length=0.25, width=0.008):
+        """World frame at the origin: identity rotation, drawn slightly larger."""
+        self.add_frame_axes(np.zeros(3), np.eye(3), length=length, width=width)
+
+    def add_body_frame(self, mj_data, body_id, length=0.15, width=0.007):
+        """Frame triad for any body, read from MuJoCo's xpos/xmat."""
+        pos = mj_data.xpos[body_id]
+        rot = mj_data.xmat[body_id].reshape(3, 3)
+        self.add_frame_axes(pos, rot, length=length, width=width)
+
+
 
     # ------------------------------------------------------------------ #
     def add_frame_axes(self, pos, rot, length=0.12, width=0.006):
@@ -87,17 +103,31 @@ class DebugVisualizer:
             )
 
     # ------------------------------------------------------------------ #
-    def draw(self, mj_data, foot_body_ids, swing_target=None, footstep_plan=None):
+    def draw(self, mj_data, foot_body_ids, swing_target=None,
+             footstep_plan=None, com=None, torso_body_id=None,
+             draw_world=True):
         """
-        Convenience: clear and draw foot frames + optional swing/plan markers.
+        Clear and draw foot frames + optional swing/plan markers, world frame,
+        and torso frame.
         foot_body_ids: dict like {"right_foot": id, "left_foot": id}
+        torso_body_id: int body id for the torso (optional)
         """
         self.clear()
+
+        # Draw Coordinate Frames
+        if draw_world:
+            self.add_world_frame()
+
         for body_id in foot_body_ids.values():
-            pos = mj_data.xpos[body_id]
-            rot = mj_data.xmat[body_id].reshape(3, 3)
-            self.add_frame_axes(pos, rot)
+            self.add_body_frame(mj_data, body_id, length=0.12, width=0.006)
+
+        if torso_body_id is not None:
+            self.add_body_frame(mj_data, torso_body_id, length=0.5, width=0.007)
+
+        # Draw Positions
         if swing_target is not None:
             self.add_swing_target(swing_target)
         if footstep_plan is not None:
             self.add_footstep_plan(footstep_plan)
+        if com is not None:
+            self.add_com(com)

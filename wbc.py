@@ -167,12 +167,12 @@ class WholeBodyController:
         # print("lambda (contact force):", lambda_contact)
 
         swing_vel = J_swing @ dq
-        print("Swing Vel (Jacobian):", swing_vel)
+        # print("Swing Vel (Jacobian):", swing_vel)
         
-        # what the QP actually commanded for the swing foot
-        print("desired swing acc:", xdd_swing_des)
-        print("commanded swing acc:", foot_acc_commanded)
-        print()
+        # # what the QP actually commanded for the swing foot
+        # print("desired swing acc:", xdd_swing_des)
+        # print("commanded swing acc:", foot_acc_commanded)
+        # print()
         # ---- solve for tau ---- #
         tau_full = D @ qdd + C @ dq + G - J_stance.T @ lambda_contact
         tau = tau_full[6:]  # actuated joints only
