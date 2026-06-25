@@ -45,8 +45,12 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
 ```
 
 ## Issues
-- WBC is not correctly tracking the stepping trajectory, it lags behind
-- Contact schedule swiches before swing foot touches down, then immediately slams into ground as the "stance foot", causing instability
+- ✅ ~~WBC is not correctly tracking the stepping trajectory, it lags behind~~
+   - Solution: separake PD gains for each task of the WBC
+- First Step is Unstable
+- Footstep locations become out of control
+
+
 
 ## Notes
 

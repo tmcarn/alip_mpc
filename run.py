@@ -17,10 +17,10 @@ class WalkingController:
         self.pin_data = data 
 
         self.feet = ["right_foot", "left_foot"]
-        self.stance_foot = self.feet[0]
+        self.stance_foot = self.feet[1]
         self.stance_id = self.pin_model.getFrameId(self.stance_foot)
 
-        self.swing_foot = self.feet[1]
+        self.swing_foot = self.feet[0]
         self.swing_id = self.pin_model.getFrameId(self.swing_foot)
         
         self.torso_id = self.pin_model.getFrameId("torso")
@@ -29,7 +29,7 @@ class WalkingController:
         self.dt = dt  # control timestep
 
         self.steps_per_phase = int(self.T_s / self.dt)
-        self.phase_counter = self.steps_per_phase # initialized so Step Planner is kicked off immediately
+        self.phase_counter = self.steps_per_phase # initialized to force a switch immediately (stance = left, swing = right)
 
         self.mpc:ALIP_MPC = mpc
         self.swing_planner:SwingTrajectory = swing_planner
@@ -79,10 +79,21 @@ class WalkingController:
         '''
         if self.phase_counter >= self.steps_per_phase: # impact has occured
             self.phase_counter = 0
+
+            swing_z_at_switch = self.get_foot_pos(self.swing_foot)[2]   # before the swap
+            print(f"swing foot z at switch: {swing_z_at_switch:.4f} (target ~0.05)")
+
             # the foot that was swinging has landed -> becomes new stance foot and vice versa
             self.stance_foot, self.swing_foot = self.swing_foot, self.stance_foot
 
             print(f"\n SWING: {self.swing_foot} \t STANCE: {self.stance_foot} \n")
+
+            # which foot is physically lower / in contact?
+            lf_z = self.get_foot_pos("left_foot")[2]
+            rf_z = self.get_foot_pos("right_foot")[2]
+            true_stance = "left_foot" if lf_z < rf_z else "right_foot"
+            print(f"labeled stance: {self.stance_foot}  |  physically lower: {true_stance}  "
+                f"(lf_z={lf_z:.3f}, rf_z={rf_z:.3f})")
 
             # Only on impact, calculate next footstep location
             x = self.get_ALIP_state(q, dq)
@@ -90,7 +101,7 @@ class WalkingController:
             u = self.mpc.solve_mpc(x, self.cmd_vel, self.stance_foot)
             new_stance_pos = self.get_foot_pos(self.stance_foot)
             self.final_swing_target = new_stance_pos + np.array([u[0], u[1], 0.0])
-            self.final_swing_target[2] = 0.025
+            self.final_swing_target[2] = 0.05
 
             # self.final_swing_target = self.get_foot_pos(self.swing_foot) # Used for standing still
             self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target) # (Initial Position , Final Position)
@@ -158,6 +169,7 @@ def run():
         time.sleep(dt*10)
 
     env.close()
+
 
 
 if __name__ == "__main__":

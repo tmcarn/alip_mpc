@@ -3,6 +3,7 @@ from pyexpat import model
 import pinocchio as pin
 import numpy as np
 from qpsolvers import solve_qp
+from constants import *
 
 class WholeBodyController:
 
@@ -15,7 +16,7 @@ class WholeBodyController:
         self.stance_id = None
         self.torso_id = self.model.getFrameId("torso")
 
-        self.com_desired_height = 1.30
+        self.com_desired_height = Z_H
 
         # PD Controller gains
         # swing foot: move fast, light damping
