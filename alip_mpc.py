@@ -30,7 +30,11 @@ def make_gamma(Ad, B, H):
     gamma = np.zeros((4*H, 2*H))
     for i in range(H):
         for j in range(i+1):
-            gamma[4*i:4*(i+1), 2*j:2*(j+1)] = np.linalg.matrix_power(Ad, i-j+1) @ B
+            # Propagate-then-impact: u_j lands at the END of step j, so it is
+            # applied to the already-propagated state (Ad^(i-j)), not the
+            # current one. Using i-j+1 here would place the foot "instantly"
+            # at x0 and yield a footstep that lags the true landing state.
+            gamma[4*i:4*(i+1), 2*j:2*(j+1)] = np.linalg.matrix_power(Ad, i-j) @ B
     return gamma
 
 def make_Q(H, q_L):
@@ -106,8 +110,8 @@ class ALIP_MPC:
         Ly_des = self.m * self.z_H * cmd_vel[0]          # forward command (0 for in-place)
         xc_des = 0.0                            # in-place: zero (scales with Ly otherwise)
 
-        X_ref = np.zeros((4 * H,))
-        for i in range(H):
+        X_ref = np.zeros((4 * self.H,))
+        for i in range(self.H):
             sigma = sigma0 * ((-1.0) ** i)      # flip each step across horizon
             yc_des, Lx_des = self.lateral_orbit_closed_form(sigma)
             X_ref[4 * i + 0] = xc_des
@@ -115,12 +119,14 @@ class ALIP_MPC:
             X_ref[4 * i + 2] = Lx_des
             X_ref[4 * i + 3] = Ly_des
 
-        # print("ALIP DES:", X_ref[0:4], "Stance Foot:", stance_foot)
+        print("ALIP DES:", X_ref[0:4], "Stance Foot:", stance_foot)
         return X_ref
     
     def step_transition(self, x_minus, u):
-        x_plus = self.impact_map(x_minus, u)
-        return self.Ad @ x_plus
+        # Propagate the current step first, THEN apply the footstep impact,
+        # matching the propagate-then-impact model used in make_gamma.
+        x_pre = self.Ad @ x_minus
+        return self.impact_map(x_pre, u)
 
     def intra_step(self, x):
         return self.Ad_small @ x
@@ -129,10 +135,14 @@ class ALIP_MPC:
         x_plus = x_minus + (self.B @ u)
         return x_plus
 
-    def solve_mpc(self, x0, cmd_vel, stance_foot):
+    def solve_mpc(self, x0, cmd_vel, stance_foot, r_reg=1e-4):
         X_ref = self.make_X_ref(cmd_vel, stance_foot)
         b = self.phi @ x0 - X_ref
-        P = 2 * self.gamma.T @ self.Q @ self.gamma
+        # Small input regularization. Q only penalizes (Lx, Ly), so the final
+        # footstep in the horizon (which affects only the unpenalized terminal
+        # CoM position) leaves P rank-deficient; the ridge makes P PD.
+        R = r_reg * np.eye(2 * self.H)
+        P = 2 * (self.gamma.T @ self.Q @ self.gamma + R)
         q = 2 * self.gamma.T @ self.Q @ b
 
         scale = np.max(np.abs(P))
@@ -207,7 +217,7 @@ if __name__ == "__main__":
     T_s = STEP_DURATION
     model = ALIP_MPC(T_s)
 
-    com_traj, foot_traj = model.run_mpc([0,0.3])
+    com_traj, foot_traj = model.run_mpc([0,0])
     model.plot_steps(com_traj, foot_traj)
 
 

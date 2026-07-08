@@ -42,30 +42,29 @@ class WalkingController:
         self.com_pos = None
 
 
-
     def get_ALIP_state(self, q, dq):
-            '''
-            Map Robot Configuration to ALIP State [x_com, y_com, L_x, L_y]
-            '''
-            # Compute CoM position and velocity
-            pin.forwardKinematics(self.pin_model, self.pin_data, q, dq)
-            pin.computeCentroidalMomentum(self.pin_model, self.pin_data, q, dq)
-            pin.centerOfMass(self.pin_model, self.pin_data, q)
-            com_pos = self.pin_data.com[0]
-            self.com_pos = com_pos
-            com_vel = self.pin_data.vcom[0]
-            L_com = self.pin_data.hg.angular
+        '''
+        Map Robot Configuration to ALIP State [x_com, y_com, L_x, L_y]
+        '''
+        # Compute CoM position and velocity
+        pin.forwardKinematics(self.pin_model, self.pin_data, q, dq)
+        pin.computeCentroidalMomentum(self.pin_model, self.pin_data, q, dq)
+        pin.centerOfMass(self.pin_model, self.pin_data, q)
+        com_pos = self.pin_data.com[0]
+        self.com_pos = com_pos
+        com_vel = self.pin_data.vcom[0]
+        L_com = self.pin_data.hg.angular
 
-            # Compute Lx, Ly using: L_contact = L_com + (r x m * v_com)
-            m = self.pin_data.mass[0]  # total mass of robot
+        # Compute Lx, Ly using: L_contact = L_com + (r x m * v_com)
+        m = self.pin_data.mass[0]  # total mass of robot
 
-            # stance foot position
-            stance_foot_pos = self.get_foot_pos(self.stance_foot)
-            r = com_pos - stance_foot_pos  # vector from stance foot to CoM
-            
-            L_contact = L_com + np.cross(r, m * com_vel)  # total angular momentum about contact point
+        # stance foot position
+        stance_foot_pos = self.get_foot_pos(self.stance_foot)
+        r = com_pos - stance_foot_pos  # vector from stance foot to CoM
+        
+        L_contact = L_com + np.cross(r, m * com_vel)  # total angular momentum about contact point
 
-            return np.concatenate([r[:2], L_contact[:2]])  # x, y com position (w.r.t. stance foot) and Lx, Ly (contact angular momentum)
+        return np.concatenate([r[:2], L_contact[:2]])  # x, y com position (w.r.t. stance foot) and Lx, Ly (contact angular momentum)
 
     def get_foot_pos(self, foot_name):
         foot_id = self.pin_model.getFrameId(foot_name)
@@ -80,20 +79,9 @@ class WalkingController:
         if self.phase_counter >= self.steps_per_phase: # impact has occured
             self.phase_counter = 0
 
-            swing_z_at_switch = self.get_foot_pos(self.swing_foot)[2]   # before the swap
-            print(f"swing foot z at switch: {swing_z_at_switch:.4f} (target ~0.05)")
-
             # the foot that was swinging has landed -> becomes new stance foot and vice versa
             self.stance_foot, self.swing_foot = self.swing_foot, self.stance_foot
 
-            print(f"\n SWING: {self.swing_foot} \t STANCE: {self.stance_foot} \n")
-
-            # which foot is physically lower / in contact?
-            lf_z = self.get_foot_pos("left_foot")[2]
-            rf_z = self.get_foot_pos("right_foot")[2]
-            true_stance = "left_foot" if lf_z < rf_z else "right_foot"
-            print(f"labeled stance: {self.stance_foot}  |  physically lower: {true_stance}  "
-                f"(lf_z={lf_z:.3f}, rf_z={rf_z:.3f})")
 
             # Only on impact, calculate next footstep location
             x = self.get_ALIP_state(q, dq)
@@ -148,7 +136,7 @@ def run():
     logger = Logger()
 
     
-    for i in range(20000):
+    for i in range(200000):
         q, dq = env.get_joint_state()
         pin.computeAllTerms(pin_model, pin_data, q, dq)
         pin.updateFramePlacements(pin_model, pin_data)
@@ -166,7 +154,7 @@ def run():
         )
 
         env.render()
-        time.sleep(dt*10)
+        time.sleep(dt*1)
 
     env.close()
 

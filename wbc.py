@@ -20,7 +20,7 @@ class WholeBodyController:
 
         # PD Controller gains
         # swing foot: move fast, light damping
-        self.Kp_swing, self.Kd_swing = 1200.0, 40.0
+        self.Kp_swing, self.Kd_swing = 1400.0, 70.0
         # torso orientation: stiff, well-damped
         self.Kp_torso, self.Kd_torso = 100.0, 20.0
         # CoM height: moderate
@@ -128,7 +128,7 @@ class WholeBodyController:
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
 
-        w1, w2, w3, w4, w5 = 100.0, 10.0, 1.0, 1.0, 0.01
+        w1, w2, w3, w4, w5 = 100.0, 8.0, 1.0, 1.0, 0.01
 
         # P matrix
         P = np.zeros((19, 19))
