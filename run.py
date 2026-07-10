@@ -76,7 +76,14 @@ class WalkingController:
         Input: q, dq, and t, 
         Output: tau
         '''
-        if self.phase_counter >= self.steps_per_phase: # impact has occured
+        swing_pos = self.get_foot_pos(self.swing_foot)
+
+        past_min = self.phase_counter >= int(MIN_FRAC * self.steps_per_phase)
+        past_max = self.phase_counter >= int(MAX_FRAC * self.steps_per_phase)
+        touched_down = past_min and swing_pos[2] <= HEIGHT_EPS
+
+        if touched_down or past_max:
+        # if self.phase_counter >= self.steps_per_phase: # impact has occured
             self.phase_counter = 0
 
             # the foot that was swinging has landed -> becomes new stance foot and vice versa
@@ -98,11 +105,12 @@ class WalkingController:
         # --- per-tick swing target ---
         t_phase = self.phase_counter * self.dt
         self.swing_target = self.swing_planner.get_target(t_phase)
+        self.swing_vel_target = self.swing_planner.get_velocity(t_phase)
         # print("Swing Foot Target:", self.swing_target)
 
         # Caluclate tau, based on swing foot and swing target
         # --- WBC ---
-        tau = self.wbc.compute_control(q, dq, self.swing_target, self.stance_foot)
+        tau = self.wbc.compute_control(q, dq, self.swing_target, self.swing_vel_target, self.stance_foot)
         tau = np.clip(tau, -ACTUATOR_LIMIT, ACTUATOR_LIMIT)
 
         self.phase_counter += 1

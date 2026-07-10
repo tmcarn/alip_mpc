@@ -22,7 +22,7 @@ class WholeBodyController:
 
         # PD Controller gains
         # swing foot: move fast, light damping
-        self.Kp_swing, self.Kd_swing = 1450.0, 60.0
+        self.Kp_swing, self.Kd_swing = 1400.0, 40.0
         # torso orientation: stiff, well-damped
         self.Kp_torso, self.Kd_torso = 100.0, 20.0
         # CoM height: moderate
@@ -62,7 +62,7 @@ class WholeBodyController:
        
         return  J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq
     
-    def pd_control(self, q, dq, target_pos, J_swing, J_torso, J_swing_rot):
+    def pd_control(self, q, dq, target_pos, target_vel, J_swing, J_torso, J_swing_rot):
         # Compute current swing foot position and velocity
         swing_foot_pos = self.data.oMf[self.swing_id].translation  # world frame position (3,)
         swing_foot_vel = J_swing @ dq  # world frame velocity (3,)
@@ -71,7 +71,7 @@ class WholeBodyController:
         # print("swing_foot_pos:", swing_foot_pos)
         pos_error = target_pos - swing_foot_pos
         # print("pos_error:", pos_error)
-        vel_error = -swing_foot_vel  # desired velocity is zero at target
+        vel_error = target_vel - swing_foot_vel  # desired velocity is zero at target
         xdd_swing_des = self.Kp_swing * pos_error + self.Kd_swing * vel_error
 
         # current torso orientation as rotation matrix
@@ -105,9 +105,9 @@ class WholeBodyController:
 
         return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des
     
-    def compute_control(self, q, dq, target_pos, stance_foot):
+    def compute_control(self, q, dq, target_pos, target_vel, stance_foot):
         J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq = self.compute_jacobians(q, dq, stance_foot)
-        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des = self.pd_control(q, dq, target_pos, J_swing, J_torso, J_swing_rot)
+        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des = self.pd_control(q, dq, target_pos, target_vel, J_swing, J_torso, J_swing_rot)
 
         # Formulate and solve QP to get q̈ and contact forces λ
         D = self.data.M
@@ -130,7 +130,7 @@ class WholeBodyController:
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
 
-        w1, w2, w3, w4, w5 = 225.0, 9.0, 1.0, 1.0, 0.01
+        w1, w2, w3, w4, w5 = 230.0, 8.0, 1.0, 1.0, 0.01
 
         # P matrix
         P = np.zeros((19, 19))
@@ -186,6 +186,9 @@ class WholeBodyController:
         # print()
         # ---- solve for tau ---- #
         tau_full = D @ qdd + C @ dq + G - J_stance.T @ lambda_contact
+        max_torque = np.abs(tau_full[6:]).max()
+        if max_torque > ACTUATOR_LIMIT:
+            print(f"WARNING: torque limit exceeded! max torque = {max_torque:.2f} Nm")
         tau = tau_full[6:]  # actuated joints only
 
         return tau
