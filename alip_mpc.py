@@ -38,7 +38,7 @@ def make_gamma(Ad, B, H):
     return gamma
 
 def make_Q(H, q_L):
-    Q_block = np.diag([0, 0, q_L, q_L])
+    Q_block = np.diag([2.1, 2.1, q_L, q_L])
     return np.kron(np.eye(H), Q_block)
 
 class ALIP_MPC:
@@ -71,7 +71,7 @@ class ALIP_MPC:
         self.Q = make_Q(H, q_L=1.0)
         
 
-    def get_bounds(self, stance_foot, u_lim=0.8, step_width_min=STEP_WIDTH): # 0.2
+    def get_bounds(self, stance_foot, u_lim=0.8, step_width_min=0.0): # 0.2
         bounds = []
         # sign for step 0: swing foot is opposite the stance foot
         swing_sign = +1 if stance_foot == "right_foot" else -1
@@ -154,6 +154,7 @@ class ALIP_MPC:
         ub = np.array([b[1] for b in self.get_bounds(stance_foot)])
 
         U = solve_qp(P_scaled, q_scaled, lb=lb, ub=ub, solver="quadprog")
+        print("MPC QP solved. U:", U[:2])
         return U[:2]
     
     def run_mpc(self, cmd_vel, steps=10):

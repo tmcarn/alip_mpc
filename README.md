@@ -46,9 +46,11 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
 
 ## Issues
 - ✅ ~~WBC is not correctly tracking the stepping trajectory, it lags behind~~
-   - Solution: separake PD gains for each task of the WBC
+   - Solution: separate PD gains for each task of the WBC
+- ✅ ~~Footstep locations become out of control~~
+   - Solution: MPC State Transitions were incorrect, teleporting foot to new position first, before doing intrastep dynamics. As a result, foot was directed to go where it needed to instantly be, not where it should be by the time it gets there. 
 - First Step is Unstable
-- Footstep locations become out of control
+- Position still drifts when commanded velocity is zero
 
 
 

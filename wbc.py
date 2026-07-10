@@ -18,9 +18,11 @@ class WholeBodyController:
 
         self.com_desired_height = Z_H
 
+        self.mu = MU
+
         # PD Controller gains
         # swing foot: move fast, light damping
-        self.Kp_swing, self.Kd_swing = 1400.0, 70.0
+        self.Kp_swing, self.Kd_swing = 1450.0, 60.0
         # torso orientation: stiff, well-damped
         self.Kp_torso, self.Kd_torso = 100.0, 20.0
         # CoM height: moderate
@@ -128,7 +130,7 @@ class WholeBodyController:
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
 
-        w1, w2, w3, w4, w5 = 100.0, 8.0, 1.0, 1.0, 0.01
+        w1, w2, w3, w4, w5 = 225.0, 9.0, 1.0, 1.0, 0.01
 
         # P matrix
         P = np.zeros((19, 19))
@@ -148,11 +150,19 @@ class WholeBodyController:
         q_vec[0:16] += w5 * np.zeros(16) # regularization — zero desired acceleration
 
         # inequality constraint: lambda_z >= 0
-        G_ineq = np.zeros((1, 19))
+        G_ineq = np.zeros((5, 19))
         G_ineq[0, 18] = -1  # -lambda_z <= 0  →  lambda_z >= 0
-        h_ineq = np.zeros(1)
+
+        mu_pyramid = self.mu / np.sqrt(2)   # inscribed-pyramid approx
+        G_ineq[1, 16] =  1; G_ineq[1, 18] = -mu_pyramid    #  lambda_x <= mu*lambda_z
+        G_ineq[2, 16] = -1; G_ineq[2, 18] = -mu_pyramid    # -lambda_x <= mu*lambda_z
+        G_ineq[3, 17] =  1; G_ineq[3, 18] = -mu_pyramid    #  lambda_y <= mu*lambda_z
+        G_ineq[4, 17] = -1; G_ineq[4, 18] = -mu_pyramid    # -lambda_y <= mu*lambda_z
+
+        h_ineq = np.zeros(5)
 
         x = solve_qp(P, q_vec, A=A_eq, b=b_eq, G=G_ineq, h=h_ineq, solver="quadprog")
+
 
         qdd = x[:16]
         lambda_contact = x[16:]
