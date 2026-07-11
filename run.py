@@ -35,7 +35,7 @@ class WalkingController:
         self.swing_planner:SwingTrajectory = swing_planner
         self.wbc:WholeBodyController = wbc
 
-        self.cmd_vel = np.array([0, 0])
+        self.cmd_vel = np.array([-0.35, 0.0])
 
         self.final_swing_target = None
         self.swing_target = None

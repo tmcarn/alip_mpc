@@ -149,19 +149,31 @@ class WholeBodyController:
         q_vec[0:16] += w4 * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
         q_vec[0:16] += w5 * np.zeros(16) # regularization — zero desired acceleration
 
-        # inequality constraint: lambda_z >= 0
-        G_ineq = np.zeros((5, 19))
-        G_ineq[0, 18] = -1  # -lambda_z <= 0  →  lambda_z >= 0
+        mu_pyramid = self.mu / np.sqrt(2)
+        G_fric = np.zeros((5, 19))
+        h_fric = np.zeros(5)
+        G_fric[0, 18] = -1
+        G_fric[1, 16] =  1; G_fric[1, 18] = -mu_pyramid
+        G_fric[2, 16] = -1; G_fric[2, 18] = -mu_pyramid
+        G_fric[3, 17] =  1; G_fric[3, 18] = -mu_pyramid
+        G_fric[4, 17] = -1; G_fric[4, 18] = -mu_pyramid
 
-        mu_pyramid = self.mu / np.sqrt(2)   # inscribed-pyramid approx
-        G_ineq[1, 16] =  1; G_ineq[1, 18] = -mu_pyramid    #  lambda_x <= mu*lambda_z
-        G_ineq[2, 16] = -1; G_ineq[2, 18] = -mu_pyramid    # -lambda_x <= mu*lambda_z
-        G_ineq[3, 17] =  1; G_ineq[3, 18] = -mu_pyramid    #  lambda_y <= mu*lambda_z
-        G_ineq[4, 17] = -1; G_ineq[4, 18] = -mu_pyramid    # -lambda_y <= mu*lambda_z
+        const_vec = C[6:, :] @ dq + G[6:]
+        Tau_map   = np.hstack([D[6:, :], -J_stance[:, 6:].T])
+        G_tau = np.vstack([Tau_map, -Tau_map])
+        h_tau = np.concatenate([
+            ACTUATOR_LIMIT - const_vec,
+            ACTUATOR_LIMIT + const_vec,
+        ])
 
-        h_ineq = np.zeros(5)
+        G_ineq = np.vstack([G_fric, G_tau])
+        h_ineq = np.concatenate([h_fric, h_tau])
 
         x = solve_qp(P, q_vec, A=A_eq, b=b_eq, G=G_ineq, h=h_ineq, solver="quadprog")
+
+        if x is None:
+            print("WBC QP infeasible — falling back to gravity compensation")
+            return (self.data.g)[6:]
 
 
         qdd = x[:16]
@@ -187,7 +199,7 @@ class WholeBodyController:
         # ---- solve for tau ---- #
         tau_full = D @ qdd + C @ dq + G - J_stance.T @ lambda_contact
         max_torque = np.abs(tau_full[6:]).max()
-        if max_torque > ACTUATOR_LIMIT:
+        if max_torque > ACTUATOR_LIMIT + 1e-3:
             print(f"WARNING: torque limit exceeded! max torque = {max_torque:.2f} Nm")
         tau = tau_full[6:]  # actuated joints only
 

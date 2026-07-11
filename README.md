@@ -49,9 +49,18 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
    - Solution: separate PD gains for each task of the WBC
 - ✅ ~~Footstep locations become out of control~~
    - Solution: MPC State Transitions were incorrect, teleporting foot to new position first, before doing intrastep dynamics. As a result, foot was directed to go where it needed to instantly be, not where it should be by the time it gets there. 
-- First Step is Unstable
-- Position still drifts when commanded velocity is zero
+- ✅ ~~First Step is Unstable~~
+   - Solution: Added friction cone constraint to WBC
+- ✅ ~~Position drifts when commanded velocity is zero~~
+   - Still drifts but much less
+   - Solutions: 
+      - PD controller velocity was set to zero, set vel tracking to target velocity from the swing trajectory generator
+      - Height Based Contact Detection Added
 
+## TODO
+- Switch height based contact detection to joint torque based (invariant to unlevel terrain)
+- Modify X_ref to allow for non-zero velocity tracking, and turning
+- Modify MPC formulation to include intra-step dynamics, and friction constraints for more dynamic manuvers
 
 
 ## Notes

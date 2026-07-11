@@ -71,7 +71,7 @@ class ALIP_MPC:
         self.Q = make_Q(H, q_L=1.0)
         
 
-    def get_bounds(self, stance_foot, u_lim=0.8, step_width_min=0.15): # 0.2
+    def get_bounds(self, stance_foot, u_lim=0.8, step_width_min=0.15): 
         bounds = []
         # sign for step 0: swing foot is opposite the stance foot
         swing_sign = +1 if stance_foot == "right_foot" else -1
@@ -107,8 +107,12 @@ class ALIP_MPC:
         # sigma for the FIRST horizon step, keyed to current stance foot.
         sigma0 = +1.0 if stance_foot == "right_foot" else -1.0
 
+        print(f"CMD VEL: {cmd_vel}")
+
         Ly_des = self.m * self.z_H * cmd_vel[0]          # forward command (0 for in-place)
-        xc_des = 0.0                            # in-place: zero (scales with Ly otherwise)
+
+        l = np.sqrt(self.g / self.z_H)
+        xc_des = (1.0/(self.m*self.z_H*l)) * np.tanh(l*self.T_s/2.0) * Ly_des
 
         X_ref = np.zeros((4 * self.H,))
         for i in range(self.H):
