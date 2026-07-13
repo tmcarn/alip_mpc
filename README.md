@@ -55,12 +55,22 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
    - Solutions: 
       - PD controller velocity was set to zero, set vel tracking to target velocity from the swing trajectory generator
       - Height Based Contact Detection Added
+- ✅ ~~Velocity tracking breaks down at about 0.1 m/s for lateral walking and 0.3 m/s for forwards walking~~
+   - Solution: Reduced nominal center of mass height (z_H) from 1.3m to 1.2m
+   - Velocity tracking increased to 0.5 m/s
 
 ## TODO
 - Add mechanics to track angular velocity as well for heading control
 - Switch height based contact detection to joint torque based (invariant to unlevel terrain)
 - Modify MPC formulation to include intra-step dynamics, and friction constraints for more dynamic manuvers
 
+## Residual RL
+- Tie this model based controller into previous work with Residual RL
+- Instead of just adding residuals to the action space, also modify upstream model parameters
+   - z_H (Nominal CoM Height)
+   - Ts (Nominal Step Duration)
+   - Bounds on Step Locations?
+   - WBC Params (Kp's, Kd's, Task Weights)?
 
 ## Notes
 
