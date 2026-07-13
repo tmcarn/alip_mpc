@@ -52,14 +52,13 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
 - ✅ ~~First Step is Unstable~~
    - Solution: Added friction cone constraint to WBC
 - ✅ ~~Position drifts when commanded velocity is zero~~
-   - Still drifts but much less
    - Solutions: 
       - PD controller velocity was set to zero, set vel tracking to target velocity from the swing trajectory generator
       - Height Based Contact Detection Added
 
 ## TODO
+- Add mechanics to track angular velocity as well for heading control
 - Switch height based contact detection to joint torque based (invariant to unlevel terrain)
-- Modify X_ref to allow for non-zero velocity tracking, and turning
 - Modify MPC formulation to include intra-step dynamics, and friction constraints for more dynamic manuvers
 
 
