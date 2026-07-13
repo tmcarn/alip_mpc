@@ -3,6 +3,8 @@
 A from-scratch ALIP-based MPC footstep planner with whole-body control (WBC)
 for a 3D 5-DOF-per-leg biped, simulated in MuJoCo.
 
+![Walking Demo](media/ALIP_MPC.gif)
+
 ## Overview
 
 The control stack has three layers:

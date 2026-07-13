@@ -35,7 +35,7 @@ class WalkingController:
         self.swing_planner:SwingTrajectory = swing_planner
         self.wbc:WholeBodyController = wbc
 
-        self.cmd_vel = np.array([-0.5, 0.3])  # [forward, lateral] command velocity])
+        self.cmd_vel = np.array([-0.0, 0.3])  # [forward, lateral] command velocity])
 
         self.final_swing_target = None
         self.swing_target = None
@@ -153,11 +153,11 @@ def run():
         env.step(tau)
         viz.draw(
             env.mj_data,
-            env.foot_body,                 # {"right_foot": id, "left_foot": id}
-            swing_target=controller.swing_target,     # yellow sphere
-            footstep_plan=controller.final_swing_target,          # magenta sphere (the MPC landing spot)
+            None,                 # {"right_foot": id, "left_foot": id}
+            swing_target=None, # yellow sphere (the current swing foot tracking target)
+            footstep_plan=controller.final_swing_target, # magenta sphere (the MPC landing spot)
             com=controller.com_pos,
-            torso_body_id=controller.torso_id,
+            torso_body_id=None,
             draw_world=True
         )
 

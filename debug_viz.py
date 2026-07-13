@@ -51,7 +51,7 @@ class DebugVisualizer:
 
     def add_com(self, pos):
         pos[2] = 0.0
-        self.add_sphere(pos, radius=0.02, rgba=(1.0, 0, 0, 1.0)) # red
+        self.add_sphere(pos, radius=0.04, rgba=(1.0, 0, 0, 1.0)) # red
 
     def add_world_frame(self, length=0.25, width=0.008):
         """World frame at the origin: identity rotation, drawn slightly larger."""
@@ -118,8 +118,9 @@ class DebugVisualizer:
         if draw_world:
             self.add_world_frame()
 
-        for body_id in foot_body_ids.values():
-            self.add_body_frame(mj_data, body_id, length=0.12, width=0.006)
+        if foot_body_ids is not None:
+            for body_id in foot_body_ids.values():
+                self.add_body_frame(mj_data, body_id, length=0.12, width=0.006)
 
         if torso_body_id is not None:
             self.add_body_frame(mj_data, torso_body_id, length=0.5, width=0.007)
