@@ -22,7 +22,7 @@ class WholeBodyController:
 
         # PD Controller gains
         # swing foot: move fast, light damping
-        self.Kp_swing, self.Kd_swing = 1400.0, 40.0
+        self.Kp_swing, self.Kd_swing = 900.0, 30.0
         # torso orientation: stiff, well-damped
         self.Kp_torso, self.Kd_torso = 100.0, 20.0
         # CoM height: moderate
@@ -105,22 +105,126 @@ class WholeBodyController:
 
         return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des
     
+    # def compute_control(self, q, dq, target_pos, target_vel, stance_foot):
+    #     J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq = self.compute_jacobians(q, dq, stance_foot)
+    #     xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des = self.pd_control(q, dq, target_pos, target_vel, J_swing, J_torso, J_swing_rot)
+
+    #     # Formulate and solve QP to get q̈ and contact forces λ
+    #     D = self.data.M
+    #     C = self.data.C
+    #     G = self.data.g
+
+    #     D_floating = D[:6, :] # shape: (6, 16)
+    #     C_floating = C[:6, :] # shape: (6, 16)
+    #     G_floating = G[:6]    # shape: (6,)
+
+    #     J_stance_floating = J_stance[:, :6]  # shape: (3, 6)
+
+    #     A_eq = np.zeros((9, 19))
+    #     b_eq = np.zeros(9)
+
+    #     A_eq[0:6, 0:16] = D_floating
+    #     A_eq[0:6, 16:19] = -J_stance_floating.T
+    #     A_eq[6:9, 0:16] = J_stance
+
+    #     b_eq[0:6] = -C_floating @ dq - G_floating
+    #     b_eq[6:9] = -Jdot_stance @ dq
+
+    #     w1, w2, w3, w4, w5 = 200.0, 8.0, 1.0, 1.0, 0.01
+
+    #     # P matrix
+    #     P = np.zeros((19, 19))
+    #     P[0:16, 0:16] += w1 * J_swing.T @ J_swing      # swing foot
+    #     P[0:16, 0:16] += w2 * J_torso.T @ J_torso      # torso orientation
+    #     P[0:16, 0:16] += w3 * J_com_z.T @ J_com_z      # CoM height
+    #     P[0:16, 0:16] += w4 * J_swing_rot.T @ J_swing_rot
+    #     P[0:16, 0:16] += w5 * np.eye(16)               # regularization
+    #     P[16:19, 16:19] += 1e-6 * np.eye(3)  # small regularization on contact forces
+
+    #     # q vector
+    #     q_vec = np.zeros(19)
+    #     q_vec[0:16] += w1 * J_swing.T @ (Jdot_swing @ dq - xdd_swing_des)
+    #     q_vec[0:16] += w2 * J_torso.T @ (Jdot_torso @ dq - alpha_torso_des)
+    #     q_vec[0:16] += w3 * J_com_z.T @ (Jdot_com_z_dq - zdd_com_des)
+    #     q_vec[0:16] += w4 * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
+    #     q_vec[0:16] += w5 * np.zeros(16) # regularization — zero desired acceleration
+
+    #     mu_pyramid = self.mu / np.sqrt(2)
+    #     G_fric = np.zeros((5, 19))
+    #     h_fric = np.zeros(5)
+    #     G_fric[0, 18] = -1
+    #     G_fric[1, 16] =  1; G_fric[1, 18] = -mu_pyramid
+    #     G_fric[2, 16] = -1; G_fric[2, 18] = -mu_pyramid
+    #     G_fric[3, 17] =  1; G_fric[3, 18] = -mu_pyramid
+    #     G_fric[4, 17] = -1; G_fric[4, 18] = -mu_pyramid
+
+    #     const_vec = C[6:, :] @ dq + G[6:]
+    #     Tau_map   = np.hstack([D[6:, :], -J_stance[:, 6:].T])
+    #     G_tau = np.vstack([Tau_map, -Tau_map])
+    #     h_tau = np.concatenate([
+    #         ACTUATOR_LIMIT - const_vec,
+    #         ACTUATOR_LIMIT + const_vec,
+    #     ])
+
+    #     G_ineq = np.vstack([G_fric, G_tau])
+    #     h_ineq = np.concatenate([h_fric, h_tau])
+
+    #     x = solve_qp(P, q_vec, A=A_eq, b=b_eq, G=G_ineq, h=h_ineq, solver="quadprog")
+
+    #     if x is None:
+    #         print("WBC QP infeasible — falling back to gravity compensation")
+    #         return (self.data.g)[6:]
+
+
+    #     qdd = x[:16]
+    #     lambda_contact = x[16:]
+
+    #     # print("lambda_contact:", lambda_contact)
+
+    #     foot_acc_commanded = J_swing @ qdd + Jdot_swing @ dq
+
+    #     # com = self.data.com[0]          # world-frame CoM position (3,)
+    #     # com_xy = com[:2]
+    #     # stance_xy = self.data.oMf[self.stance_id].translation[:2]
+    #     # print("CoM-stance lateral offset:", com_xy - stance_xy)
+    #     # print("lambda (contact force):", lambda_contact)
+
+    #     swing_vel = J_swing @ dq
+    #     # print("Swing Vel (Jacobian):", swing_vel)
+        
+    #     # # what the QP actually commanded for the swing foot
+    #     # print("desired swing acc:", xdd_swing_des)
+    #     # print("commanded swing acc:", foot_acc_commanded)
+    #     # print()
+    #     # ---- solve for tau ---- #
+    #     tau_full = D @ qdd + C @ dq + G - J_stance.T @ lambda_contact
+    #     max_torque = np.abs(tau_full[6:]).max()
+    #     if max_torque > ACTUATOR_LIMIT + 1e-3:
+    #         print(f"WARNING: torque limit exceeded! max torque = {max_torque:.2f} Nm")
+    #     tau = tau_full[6:]  # actuated joints only
+
+    #     return tau
+
     def compute_control(self, q, dq, target_pos, target_vel, stance_foot):
         J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq = self.compute_jacobians(q, dq, stance_foot)
         xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des = self.pd_control(q, dq, target_pos, target_vel, J_swing, J_torso, J_swing_rot)
 
-        # Formulate and solve QP to get q̈ and contact forces λ
         D = self.data.M
         C = self.data.C
         G = self.data.g
 
-        D_floating = D[:6, :] # shape: (6, 16)
-        C_floating = C[:6, :] # shape: (6, 16)
-        G_floating = G[:6]    # shape: (6,)
+        D_floating = D[:6, :]
+        C_floating = C[:6, :]
+        G_floating = G[:6]
 
-        J_stance_floating = J_stance[:, :6]  # shape: (3, 6)
+        J_stance_floating = J_stance[:, :6]
 
-        A_eq = np.zeros((9, 19))
+        N_X = 19       # qdd(16) + lambda(3), same as before
+        N_SLACK = 12   # s_fric_x, s_fric_y, s_tau(10)
+        N_TOTAL = N_X + N_SLACK
+
+        # --- equality constraints (unchanged, just padded for the new slack columns) ---
+        A_eq = np.zeros((9, N_TOTAL))
         b_eq = np.zeros(9)
 
         A_eq[0:6, 0:16] = D_floating
@@ -130,81 +234,84 @@ class WholeBodyController:
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
 
-        w1, w2, w3, w4, w5 = 230.0, 8.0, 1.0, 1.0, 0.01
+        w1, w2, w3, w4, w5 = 200.0, 8.0, 1.0, 1.0, 0.01   # <- double check this w1 matches what you intend; was 230.0 in your last paste
 
-        # P matrix
-        P = np.zeros((19, 19))
-        P[0:16, 0:16] += w1 * J_swing.T @ J_swing      # swing foot
-        P[0:16, 0:16] += w2 * J_torso.T @ J_torso      # torso orientation
-        P[0:16, 0:16] += w3 * J_com_z.T @ J_com_z      # CoM height
+        # --- P matrix ---
+        P = np.zeros((N_TOTAL, N_TOTAL))
+        P[0:16, 0:16] += w1 * J_swing.T @ J_swing
+        P[0:16, 0:16] += w2 * J_torso.T @ J_torso
+        P[0:16, 0:16] += w3 * J_com_z.T @ J_com_z
         P[0:16, 0:16] += w4 * J_swing_rot.T @ J_swing_rot
-        P[0:16, 0:16] += w5 * np.eye(16)               # regularization
-        P[16:19, 16:19] += 1e-6 * np.eye(3)  # small regularization on contact forces
+        P[0:16, 0:16] += w5 * np.eye(16)
+        P[16:19, 16:19] += 1e-6 * np.eye(3)
+        P[N_X:, N_X:] += 1e-6 * np.eye(N_SLACK)   # tiny reg on slacks, purely for conditioning
 
-        # q vector
-        q_vec = np.zeros(19)
+        # --- q vector ---
+        q_vec = np.zeros(N_TOTAL)
         q_vec[0:16] += w1 * J_swing.T @ (Jdot_swing @ dq - xdd_swing_des)
         q_vec[0:16] += w2 * J_torso.T @ (Jdot_torso @ dq - alpha_torso_des)
         q_vec[0:16] += w3 * J_com_z.T @ (Jdot_com_z_dq - zdd_com_des)
         q_vec[0:16] += w4 * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
-        q_vec[0:16] += w5 * np.zeros(16) # regularization — zero desired acceleration
+        q_vec[0:16] += w5 * np.zeros(16)
 
+        w_slack = 1e5   # heavy: only use slack when truly necessary
+        q_vec[N_X:] = w_slack
+
+        # --- friction cone (soft on the four tangential bounds; lambda_z>=0 stays hard) ---
         mu_pyramid = self.mu / np.sqrt(2)
-        G_fric = np.zeros((5, 19))
+        G_fric = np.zeros((5, N_TOTAL))
         h_fric = np.zeros(5)
-        G_fric[0, 18] = -1
-        G_fric[1, 16] =  1; G_fric[1, 18] = -mu_pyramid
-        G_fric[2, 16] = -1; G_fric[2, 18] = -mu_pyramid
-        G_fric[3, 17] =  1; G_fric[3, 18] = -mu_pyramid
-        G_fric[4, 17] = -1; G_fric[4, 18] = -mu_pyramid
 
+        G_fric[0, 18] = -1   # -lambda_z <= 0  (hard, never relaxed)
+
+        G_fric[1, 16] =  1; G_fric[1, 18] = -mu_pyramid; G_fric[1, 19] = -1
+        G_fric[2, 16] = -1; G_fric[2, 18] = -mu_pyramid; G_fric[2, 19] = -1
+        G_fric[3, 17] =  1; G_fric[3, 18] = -mu_pyramid; G_fric[3, 20] = -1
+        G_fric[4, 17] = -1; G_fric[4, 18] = -mu_pyramid; G_fric[4, 20] = -1
+
+        # --- torque limits (soft, one slack per actuated joint) ---
         const_vec = C[6:, :] @ dq + G[6:]
-        Tau_map   = np.hstack([D[6:, :], -J_stance[:, 6:].T])
-        G_tau = np.vstack([Tau_map, -Tau_map])
-        h_tau = np.concatenate([
-            ACTUATOR_LIMIT - const_vec,
-            ACTUATOR_LIMIT + const_vec,
-        ])
+        Tau_map   = np.hstack([D[6:, :], -J_stance[:, 6:].T])   # (10, 19)
 
-        G_ineq = np.vstack([G_fric, G_tau])
-        h_ineq = np.concatenate([h_fric, h_tau])
+        G_tau_up = np.zeros((10, N_TOTAL))
+        G_tau_lo = np.zeros((10, N_TOTAL))
+        for i in range(10):
+            G_tau_up[i, 0:19] = Tau_map[i, :]
+            G_tau_up[i, 21 + i] = -1
+            G_tau_lo[i, 0:19] = -Tau_map[i, :]
+            G_tau_lo[i, 21 + i] = -1
+        h_tau_up = ACTUATOR_LIMIT - const_vec
+        h_tau_lo = ACTUATOR_LIMIT + const_vec
+
+        # --- slack non-negativity ---
+        G_slack = np.zeros((N_SLACK, N_TOTAL))
+        for j in range(N_SLACK):
+            G_slack[j, N_X + j] = -1
+        h_slack = np.zeros(N_SLACK)
+
+        G_ineq = np.vstack([G_fric, G_tau_up, G_tau_lo, G_slack])
+        h_ineq = np.concatenate([h_fric, h_tau_up, h_tau_lo, h_slack])
 
         x = solve_qp(P, q_vec, A=A_eq, b=b_eq, G=G_ineq, h=h_ineq, solver="quadprog")
 
         if x is None:
-            print("WBC QP infeasible — falling back to gravity compensation")
+            # should be rare now -- equality constraints alone are essentially always
+            # solvable; this is the genuinely pathological case (e.g. singular D)
+            print("WBC QP infeasible even with slack -- falling back to gravity compensation")
             return (self.data.g)[6:]
 
-
         qdd = x[:16]
-        lambda_contact = x[16:]
+        lambda_contact = x[16:19]
+        slack = x[19:]
 
-        # print("lambda_contact:", lambda_contact)
+        if np.max(slack) > 1e-3:
+            print(f"WBC constraint relaxed by {np.max(slack):.3f} -- task demand exceeds physical limit")
 
-        foot_acc_commanded = J_swing @ qdd + Jdot_swing @ dq
-
-        # com = self.data.com[0]          # world-frame CoM position (3,)
-        # com_xy = com[:2]
-        # stance_xy = self.data.oMf[self.stance_id].translation[:2]
-        # print("CoM-stance lateral offset:", com_xy - stance_xy)
-        # print("lambda (contact force):", lambda_contact)
-
-        swing_vel = J_swing @ dq
-        # print("Swing Vel (Jacobian):", swing_vel)
-        
-        # # what the QP actually commanded for the swing foot
-        # print("desired swing acc:", xdd_swing_des)
-        # print("commanded swing acc:", foot_acc_commanded)
-        # print()
-        # ---- solve for tau ---- #
         tau_full = D @ qdd + C @ dq + G - J_stance.T @ lambda_contact
-        max_torque = np.abs(tau_full[6:]).max()
-        if max_torque > ACTUATOR_LIMIT + 1e-3:
-            print(f"WARNING: torque limit exceeded! max torque = {max_torque:.2f} Nm")
-        tau = tau_full[6:]  # actuated joints only
+        tau = tau_full[6:]
 
         return tau
-
+    
 if __name__ == "__main__":
     wbc = WholeBodyController()
 

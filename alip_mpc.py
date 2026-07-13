@@ -114,13 +114,15 @@ class ALIP_MPC:
         l = np.sqrt(self.g / self.z_H)
         xc_des = (1.0/(self.m*self.z_H*l)) * np.tanh(l*self.T_s/2.0) * Ly_des
 
+        Lx_offset = -self.m * self.z_H * cmd_vel[1] # Offset for lateral motion
+
         X_ref = np.zeros((4 * self.H,))
         for i in range(self.H):
             sigma = sigma0 * ((-1.0) ** i)      # flip each step across horizon
             yc_des, Lx_des = self.lateral_orbit_closed_form(sigma)
             X_ref[4 * i + 0] = xc_des
             X_ref[4 * i + 1] = yc_des
-            X_ref[4 * i + 2] = Lx_des
+            X_ref[4 * i + 2] = Lx_des + Lx_offset
             X_ref[4 * i + 3] = Ly_des
 
         print("ALIP DES:", X_ref[0:4], "Stance Foot:", stance_foot)
