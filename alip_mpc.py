@@ -43,7 +43,7 @@ def make_Q(H, q_L):
 
 class ALIP_MPC:
     def __init__(self, T_s, H=10, dt_control=0.02):
-        model, _, _ = pin.buildModelsFromMJCF("xml_files/biped_3d_5dof_leg.xml")
+        model, _, _ = pin.buildModelsFromMJCF(XML_PATH)
         
         data = model.createData()
 
@@ -71,17 +71,17 @@ class ALIP_MPC:
         self.Q = make_Q(H, q_L=1.0)
         
 
-    def get_bounds(self, stance_foot, u_lim=0.8, step_width_min=0.15): 
+    def get_bounds(self, stance_foot, x_lim=X_DIST, y_lim=Y_DIST, step_width_min=STEP_WIDTH): 
         bounds = []
         # sign for step 0: swing foot is opposite the stance foot
-        swing_sign = +1 if stance_foot == "right_foot" else -1
+        swing_sign = +1 if stance_foot == FOOT_NAMES[0] else -1
         for i in range(self.H):
-            bounds.append((-u_lim, u_lim))  # x
+            bounds.append((-x_lim, x_lim))  # x
             sign = swing_sign * ((-1) ** i)  # alternates each step in horizon
             if sign > 0:
-                bounds.append((step_width_min, u_lim))
+                bounds.append((step_width_min, y_lim))
             else:
-                bounds.append((-u_lim, -step_width_min))
+                bounds.append((-y_lim, -step_width_min))
         return bounds
 
     def lateral_orbit_closed_form(self, sigma):
@@ -105,7 +105,7 @@ class ALIP_MPC:
         Lateral sway alternates each step; sagittal travel rides on Ly_des.
         '''
         # sigma for the FIRST horizon step, keyed to current stance foot.
-        sigma0 = +1.0 if stance_foot == "right_foot" else -1.0
+        sigma0 = +1.0 if stance_foot == FOOT_NAMES[0] else -1.0
 
         print(f"CMD VEL: {cmd_vel}")
 
@@ -165,8 +165,8 @@ class ALIP_MPC:
     
     def run_mpc(self, cmd_vel, steps=10):
         curr_world_u = [0, 0.1] # left foot stance
-        stance_foot = "right_foot"
-        swing_foot = "left_foot"
+        stance_foot = FOOT_NAMES[0]
+        swing_foot = FOOT_NAMES[1]
 
         sigma = +1
 

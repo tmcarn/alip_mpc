@@ -47,6 +47,8 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
 ```
 
 ## Issues
+- ✅ ~~Pinocchio Model not lining up with MuJoCo Model~~
+   - Solution: freejoint position should be set to zero
 - ✅ ~~WBC is not correctly tracking the stepping trajectory, it lags behind~~
    - Solution: separate PD gains for each task of the WBC
 - ✅ ~~Footstep locations become out of control~~

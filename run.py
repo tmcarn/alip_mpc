@@ -4,6 +4,7 @@ from constants import *
 import pinocchio as pin
 
 from env import BipedEnv
+import env
 from swingtraj import SwingTrajectory
 from alip_mpc import ALIP_MPC
 from wbc import WholeBodyController
@@ -16,14 +17,14 @@ class WalkingController:
         self.pin_model = model
         self.pin_data = data 
 
-        self.feet = ["right_foot", "left_foot"]
+        self.feet = FOOT_NAMES
         self.stance_foot = self.feet[1]
         self.stance_id = self.pin_model.getFrameId(self.stance_foot)
 
         self.swing_foot = self.feet[0]
         self.swing_id = self.pin_model.getFrameId(self.swing_foot)
         
-        self.torso_id = self.pin_model.getFrameId("torso")
+        self.torso_id = self.pin_model.getFrameId(TORSO_NAME, pin.FrameType.BODY)
 
         self.T_s = STEP_DURATION  # step duration in seconds
         self.dt = dt  # control timestep
@@ -35,7 +36,7 @@ class WalkingController:
         self.swing_planner:SwingTrajectory = swing_planner
         self.wbc:WholeBodyController = wbc
 
-        self.cmd_vel = np.array([-0.0, 0.3])  # [forward, lateral] command velocity])
+        self.cmd_vel = np.array([0.3, 0.0])  # [forward, lateral] command velocity])
 
         self.final_swing_target = None
         self.swing_target = None
@@ -51,6 +52,7 @@ class WalkingController:
         pin.computeCentroidalMomentum(self.pin_model, self.pin_data, q, dq)
         pin.centerOfMass(self.pin_model, self.pin_data, q)
         com_pos = self.pin_data.com[0]
+        print("CoM Position:", com_pos)
         self.com_pos = com_pos
         com_vel = self.pin_data.vcom[0]
         L_com = self.pin_data.hg.angular
@@ -83,12 +85,10 @@ class WalkingController:
         touched_down = past_min and swing_pos[2] <= HEIGHT_EPS
 
         if touched_down or past_max:
-        # if self.phase_counter >= self.steps_per_phase: # impact has occured
             self.phase_counter = 0
 
             # the foot that was swinging has landed -> becomes new stance foot and vice versa
             self.stance_foot, self.swing_foot = self.swing_foot, self.stance_foot
-
 
             # Only on impact, calculate next footstep location
             x = self.get_ALIP_state(q, dq)
@@ -96,12 +96,11 @@ class WalkingController:
             u = self.mpc.solve_mpc(x, self.cmd_vel, self.stance_foot)
             new_stance_pos = self.get_foot_pos(self.stance_foot)
             self.final_swing_target = new_stance_pos + np.array([u[0], u[1], 0.0])
-            self.final_swing_target[2] = 0.05
+            self.final_swing_target[2] = FOOT_OFFSET
 
             # self.final_swing_target = self.get_foot_pos(self.swing_foot) # Used for standing still
             self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target) # (Initial Position , Final Position)
         
-        # print("Swing Foot Position:", self.get_foot_pos(self.swing_foot))
         # --- per-tick swing target ---
         t_phase = self.phase_counter * self.dt
         self.swing_target = self.swing_planner.get_target(t_phase)
@@ -111,7 +110,7 @@ class WalkingController:
         # Caluclate tau, based on swing foot and swing target
         # --- WBC ---
         tau = self.wbc.compute_control(q, dq, self.swing_target, self.swing_vel_target, self.stance_foot)
-        tau = np.clip(tau, -ACTUATOR_LIMIT, ACTUATOR_LIMIT)
+        tau = np.clip(tau, -ACTUATOR_LIMITS, ACTUATOR_LIMITS)
 
         self.phase_counter += 1
 
@@ -122,9 +121,11 @@ def run():
     env = BipedEnv(XML_PATH)
     q, dq = env.reset()
 
-    pin_model, _, _ = pin.buildModelsFromMJCF(XML_PATH)
+    pin_model, _, _ = pin.buildModelsFromMJCF(XML_PATH) 
+
     pin_data = pin_model.createData()
 
+    pin.forwardKinematics(pin_model, pin_data, q)
     pin.computeAllTerms(pin_model, pin_data, q, dq)
     pin.updateFramePlacements(pin_model, pin_data)
 
@@ -132,20 +133,20 @@ def run():
     T_s = STEP_DURATION
 
     mpc = ALIP_MPC(T_s, H=H, dt_control=dt)
-    swing = SwingTrajectory(clearance=0.1)
+    swing = SwingTrajectory(clearance=STEP_HEIGHT)
     wbc = WholeBodyController(pin_model, pin_data)
 
     controller = WalkingController(pin_model, pin_data, dt, mpc, wbc, swing)
 
-    print("START:", controller.get_foot_pos("left_foot"), controller.get_foot_pos("right_foot"))
+    print("START:", controller.get_foot_pos(FOOT_NAMES[0]), controller.get_foot_pos(FOOT_NAMES[1]))
 
     viz = DebugVisualizer(env.viewer)
-
-    logger = Logger()
-
     
     for i in range(200000):
         q, dq = env.get_joint_state()
+
+        # Pinocchio Updates
+        pin.forwardKinematics(pin_model, pin_data, q)
         pin.computeAllTerms(pin_model, pin_data, q, dq)
         pin.updateFramePlacements(pin_model, pin_data)
 
@@ -153,16 +154,16 @@ def run():
         env.step(tau)
         viz.draw(
             env.mj_data,
-            None,                 # {"right_foot": id, "left_foot": id}
-            swing_target=None, # yellow sphere (the current swing foot tracking target)
+            env.foot_body,
+            swing_target=controller.swing_target, # yellow sphere (the current swing foot tracking target)
             footstep_plan=controller.final_swing_target, # magenta sphere (the MPC landing spot)
             com=controller.com_pos,
-            torso_body_id=None,
+            torso_body_id=env.torso,
             draw_world=True
         )
 
         env.render()
-        time.sleep(dt*1)
+        time.sleep(dt*10)
 
     env.close()
 

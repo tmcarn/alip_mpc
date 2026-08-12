@@ -22,9 +22,17 @@ class BipedEnv:
         self.viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
 
         self.foot_body = {
-            "right_foot": mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "right_foot"),
-            "left_foot":  mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "left_foot"),
+            "right_foot": mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, FOOT_NAMES[0]),
+            "left_foot":  mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, FOOT_NAMES[1]),
         }
+
+        self.torso = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, TORSO_NAME)
+
+        mujoco.mj_forward(self.mj_model, self.mj_data)   # or mj_step — populates xpos/site_xpos from qpos
+
+        body_pos = self.mj_data.xpos[self.foot_body["right_foot"]].copy()
+
+        print("FOOT POS", body_pos) 
 
     def reset(self):
         mujoco.mj_resetDataKeyframe(self.mj_model, self.mj_data, 0)

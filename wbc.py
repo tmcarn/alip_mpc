@@ -10,11 +10,15 @@ class WholeBodyController:
     def __init__(self, model, data):
         self.model = model
         self.data = data
-        self.feet = ["right_foot", "left_foot"]
+
+        self.nv = self.model.nv # total DOF
+        self.n_vars = self.nv + 3 # total decision variables n-DOF plus linear contact forces (x, y, z)
+
+        self.feet = FOOT_NAMES
 
         self.swing_id = None
         self.stance_id = None
-        self.torso_id = self.model.getFrameId("torso")
+        self.torso_id = self.model.getFrameId(TORSO_NAME)
 
         self.com_desired_height = Z_H
 
@@ -33,7 +37,7 @@ class WholeBodyController:
     def compute_jacobians(self, q, dq, stance_foot):
         # Get frame IDs
         self.stance_id = self.model.getFrameId(stance_foot)
-        self.swing_id = self.model.getFrameId("left_foot" if stance_foot == "right_foot" else "right_foot")
+        self.swing_id = self.model.getFrameId(self.feet[1] if stance_foot == self.feet[0] else self.feet[0])
 
         pin.computeJointJacobians(self.model, self.data, q)
         pin.computeJointJacobiansTimeVariation(self.model, self.data, q, dq)
@@ -67,10 +71,7 @@ class WholeBodyController:
         swing_foot_pos = self.data.oMf[self.swing_id].translation  # world frame position (3,)
         swing_foot_vel = J_swing @ dq  # world frame velocity (3,)
         # Desired accelerations (PD control)
-        # print("target_pos:", target_pos)
-        # print("swing_foot_pos:", swing_foot_pos)
         pos_error = target_pos - swing_foot_pos
-        # print("pos_error:", pos_error)
         vel_error = target_vel - swing_foot_vel  # desired velocity is zero at target
         xdd_swing_des = self.Kp_swing * pos_error + self.Kd_swing * vel_error
 
@@ -120,12 +121,12 @@ class WholeBodyController:
 
         J_stance_floating = J_stance[:, :6]  # shape: (3, 6)
 
-        A_eq = np.zeros((9, 19))
+        A_eq = np.zeros((9, self.n_vars))
         b_eq = np.zeros(9)
 
-        A_eq[0:6, 0:16] = D_floating
-        A_eq[0:6, 16:19] = -J_stance_floating.T
-        A_eq[6:9, 0:16] = J_stance
+        A_eq[0:6, 0:self.nv] = D_floating
+        A_eq[0:6, self.nv:self.n_vars] = -J_stance_floating.T
+        A_eq[6:9, 0:self.nv] = J_stance
 
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
@@ -133,37 +134,37 @@ class WholeBodyController:
         w1, w2, w3, w4, w5 = 200.0, 8.0, 1.0, 1.0, 0.01
 
         # P matrix
-        P = np.zeros((19, 19))
-        P[0:16, 0:16] += w1 * J_swing.T @ J_swing      # swing foot
-        P[0:16, 0:16] += w2 * J_torso.T @ J_torso      # torso orientation
-        P[0:16, 0:16] += w3 * J_com_z.T @ J_com_z      # CoM height
-        P[0:16, 0:16] += w4 * J_swing_rot.T @ J_swing_rot
-        P[0:16, 0:16] += w5 * np.eye(16)               # regularization
-        P[16:19, 16:19] += 1e-6 * np.eye(3)  # small regularization on contact forces
+        P = np.zeros((self.n_vars, self.n_vars))
+        P[0:self.nv, 0:self.nv] += w1 * J_swing.T @ J_swing      # swing foot
+        P[0:self.nv, 0:self.nv] += w2 * J_torso.T @ J_torso      # torso orientation
+        P[0:self.nv, 0:self.nv] += w3 * J_com_z.T @ J_com_z      # CoM height
+        P[0:self.nv, 0:self.nv] += w4 * J_swing_rot.T @ J_swing_rot
+        P[0:self.nv, 0:self.nv] += w5 * np.eye(self.nv)               # regularization
+        P[self.nv:self.n_vars, self.nv:self.n_vars] += 1e-6 * np.eye(3)  # small regularization on contact forces
 
         # q vector
-        q_vec = np.zeros(19)
-        q_vec[0:16] += w1 * J_swing.T @ (Jdot_swing @ dq - xdd_swing_des)
-        q_vec[0:16] += w2 * J_torso.T @ (Jdot_torso @ dq - alpha_torso_des)
-        q_vec[0:16] += w3 * J_com_z.T @ (Jdot_com_z_dq - zdd_com_des)
-        q_vec[0:16] += w4 * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
-        q_vec[0:16] += w5 * np.zeros(16) # regularization — zero desired acceleration
+        q_vec = np.zeros(self.n_vars)
+        q_vec[0:self.nv] += w1 * J_swing.T @ (Jdot_swing @ dq - xdd_swing_des)
+        q_vec[0:self.nv] += w2 * J_torso.T @ (Jdot_torso @ dq - alpha_torso_des)
+        q_vec[0:self.nv] += w3 * J_com_z.T @ (Jdot_com_z_dq - zdd_com_des)
+        q_vec[0:self.nv] += w4 * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
+        q_vec[0:self.nv] += w5 * np.zeros(self.nv) # regularization — zero desired acceleration
 
         mu_pyramid = self.mu / np.sqrt(2)
-        G_fric = np.zeros((5, 19))
+        G_fric = np.zeros((5, self.n_vars))
         h_fric = np.zeros(5)
-        G_fric[0, 18] = -1
-        G_fric[1, 16] =  1; G_fric[1, 18] = -mu_pyramid
-        G_fric[2, 16] = -1; G_fric[2, 18] = -mu_pyramid
-        G_fric[3, 17] =  1; G_fric[3, 18] = -mu_pyramid
-        G_fric[4, 17] = -1; G_fric[4, 18] = -mu_pyramid
+        G_fric[0, self.n_vars-1] = -1
+        G_fric[1, self.nv-2] =  1; G_fric[1, self.n_vars-1] = -mu_pyramid
+        G_fric[2, self.nv-2] = -1; G_fric[2, self.n_vars-1] = -mu_pyramid
+        G_fric[3, self.nv-1] =  1; G_fric[3, self.n_vars-1] = -mu_pyramid
+        G_fric[4, self.nv-1] = -1; G_fric[4, self.n_vars-1] = -mu_pyramid
 
         const_vec = C[6:, :] @ dq + G[6:]
         Tau_map   = np.hstack([D[6:, :], -J_stance[:, 6:].T])
         G_tau = np.vstack([Tau_map, -Tau_map])
         h_tau = np.concatenate([
-            ACTUATOR_LIMIT - const_vec,
-            ACTUATOR_LIMIT + const_vec,
+            ACTUATOR_LIMITS - const_vec,
+            ACTUATOR_LIMITS + const_vec,
         ])
 
         G_ineq = np.vstack([G_fric, G_tau])
@@ -176,8 +177,8 @@ class WholeBodyController:
             return (self.data.g)[6:]
 
 
-        qdd = x[:16]
-        lambda_contact = x[16:]
+        qdd = x[:self.nv]
+        lambda_contact = x[self.nv:self.n_vars]
 
         # print("lambda_contact:", lambda_contact)
 
@@ -198,9 +199,11 @@ class WholeBodyController:
         # print()
         # ---- solve for tau ---- #
         tau_full = D @ qdd + C @ dq + G - J_stance.T @ lambda_contact
-        max_torque = np.abs(tau_full[6:]).max()
-        if max_torque > ACTUATOR_LIMIT + 1e-3:
-            print(f"WARNING: torque limit exceeded! max torque = {max_torque:.2f} Nm")
+
+        # max_torque = np.abs(tau_full[6:]).max()
+        # if max_torque > ACTUATOR_LIMIT + 1e-3:
+        #     print(f"WARNING: torque limit exceeded! max torque = {max_torque:.2f} Nm")
+
         tau = tau_full[6:]  # actuated joints only
 
         return tau
