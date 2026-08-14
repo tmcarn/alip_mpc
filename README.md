@@ -63,10 +63,18 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
    - Solution: Reduced nominal center of mass height (z_H) from 1.3m to 1.2m
    - Velocity tracking increased to 0.5 m/s
 
+SWITCHING to Unitree G1
+- Arms swinging out of control
+   - Solution: Add posture regularization for arm joints
+
+- Knees are overextending
+   - Add Joint Limits to WBC optimization formulation
+
 ## TODO
 - Add mechanics to track angular velocity as well for heading control
 - Switch height based contact detection to joint torque based (invariant to unlevel terrain)
 - Modify MPC formulation to include intra-step dynamics, and friction constraints for more dynamic manuvers
+- HQP for Heirarchical Task Space Control
 
 ## Residual RL
 - Tie this model based controller into previous work with Residual RL

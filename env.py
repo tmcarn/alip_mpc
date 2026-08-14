@@ -19,6 +19,9 @@ class BipedEnv:
         self.mj_data = mujoco.MjData(self.mj_model)
         self.dt = self.mj_model.opt.timestep  # control timestep
 
+        self.key_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_KEY, "crouch")
+        mujoco.mj_resetDataKeyframe(self.mj_model, self.mj_data, self.key_id)
+    
         self.viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
 
         self.foot_body = {
@@ -35,7 +38,7 @@ class BipedEnv:
         print("FOOT POS", body_pos) 
 
     def reset(self):
-        mujoco.mj_resetDataKeyframe(self.mj_model, self.mj_data, 0)
+        mujoco.mj_resetDataKeyframe(self.mj_model, self.mj_data, self.key_id)
         mujoco.mj_forward(self.mj_model, self.mj_data)
         return self.get_joint_state()
 

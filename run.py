@@ -1,3 +1,5 @@
+from pyexpat import model
+
 import numpy as np
 import time
 from constants import *
@@ -36,7 +38,7 @@ class WalkingController:
         self.swing_planner:SwingTrajectory = swing_planner
         self.wbc:WholeBodyController = wbc
 
-        self.cmd_vel = np.array([0.3, 0.0])  # [forward, lateral] command velocity])
+        self.cmd_vel = np.array([0.0, 0.0])  # [forward, lateral] command velocity])
 
         self.final_swing_target = None
         self.swing_target = None
@@ -52,7 +54,6 @@ class WalkingController:
         pin.computeCentroidalMomentum(self.pin_model, self.pin_data, q, dq)
         pin.centerOfMass(self.pin_model, self.pin_data, q)
         com_pos = self.pin_data.com[0]
-        print("CoM Position:", com_pos)
         self.com_pos = com_pos
         com_vel = self.pin_data.vcom[0]
         L_com = self.pin_data.hg.angular
@@ -121,24 +122,38 @@ def run():
     env = BipedEnv(XML_PATH)
     q, dq = env.reset()
 
+    q_ref = q # used for posture regularization
+
     pin_model, _, _ = pin.buildModelsFromMJCF(XML_PATH) 
 
     pin_data = pin_model.createData()
+
+    # Build Arm Indecies
+    arm_idx_q = []
+    arm_idx_v = []
+    for name in ARM_LINKS:
+        jid = pin_model.getJointId(name)
+        arm_idx_q.append(pin_model.joints[jid].idx_q)
+        arm_idx_v.append(pin_model.joints[jid].idx_v)
 
     pin.forwardKinematics(pin_model, pin_data, q)
     pin.computeAllTerms(pin_model, pin_data, q, dq)
     pin.updateFramePlacements(pin_model, pin_data)
 
+    print("actual CoM height:", pin_data.com[0][2])
+
     dt = env.mj_model.opt.timestep
     T_s = STEP_DURATION
 
-    mpc = ALIP_MPC(T_s, H=H, dt_control=dt)
+    mpc = ALIP_MPC(pin_model, pin_data, T_s, H=H, dt_control=dt)
     swing = SwingTrajectory(clearance=STEP_HEIGHT)
-    wbc = WholeBodyController(pin_model, pin_data)
+    wbc = WholeBodyController(pin_model, pin_data, q_ref, arm_idx_q, arm_idx_v)
 
     controller = WalkingController(pin_model, pin_data, dt, mpc, wbc, swing)
 
     print("START:", controller.get_foot_pos(FOOT_NAMES[0]), controller.get_foot_pos(FOOT_NAMES[1]))
+
+    print("INIT ALIP STATE:", controller.get_ALIP_state(q, dq))
 
     viz = DebugVisualizer(env.viewer)
     
@@ -152,6 +167,7 @@ def run():
 
         tau = controller.compute_action(q, dq)
         env.step(tau)
+        
         viz.draw(
             env.mj_data,
             env.foot_body,
@@ -163,7 +179,7 @@ def run():
         )
 
         env.render()
-        time.sleep(dt*10)
+        time.sleep(dt*1)
 
     env.close()
 

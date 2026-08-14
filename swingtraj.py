@@ -11,7 +11,6 @@ class SwingTrajectory:
     
     def reset(self, start_pos, target_pos):
         # called at each step transition
-        print("RESET")
         self.start_pos = start_pos.copy()
         self.target_pos = target_pos.copy()
 

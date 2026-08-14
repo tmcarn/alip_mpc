@@ -7,9 +7,13 @@ from constants import *
 
 class WholeBodyController:
 
-    def __init__(self, model, data):
+    def __init__(self, model, data, q_ref, arm_idx_q, arm_idx_dq):
         self.model = model
         self.data = data
+
+        self.q_ref = q_ref
+        self.arm_idx_q = arm_idx_q
+        self.arm_idx_dq = arm_idx_dq
 
         self.nv = self.model.nv # total DOF
         self.n_vars = self.nv + 3 # total decision variables n-DOF plus linear contact forces (x, y, z)
@@ -33,6 +37,8 @@ class WholeBodyController:
         self.Kp_com, self.Kd_com = 100.0, 20.0
         # Swing Foot Orientation
         self.Kp_swing_rot, self.Kd_swing_rot = 100.0, 20.0
+        # Posture Regularization
+        self.Kp_posture, self.Kd_posture = 100.0, 20.0
 
     def compute_jacobians(self, q, dq, stance_foot):
         # Get frame IDs
@@ -63,8 +69,11 @@ class WholeBodyController:
         J_com_z = J_com[2:3, :]  # shape (1, 16)
         Jdot_com_dq = self.data.acom[0]  # shape (3,) — this is J_com_dot @ dq
         Jdot_com_z_dq = Jdot_com_dq[2:3]  # z component only
+
+        arm_selection_matrix = np.zeros((len(self.arm_idx_dq), self.model.nv))
+        arm_selection_matrix[np.arange(len(self.arm_idx_dq)), self.arm_idx_dq] = 1.0 # Selection matrix for arm joints
        
-        return  J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq
+        return  J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq, arm_selection_matrix
     
     def pd_control(self, q, dq, target_pos, target_vel, J_swing, J_torso, J_swing_rot):
         # Compute current swing foot position and velocity
@@ -104,11 +113,18 @@ class WholeBodyController:
         omega_swing = J_swing_rot @ dq
         alpha_swing_des = self.Kp_swing_rot * swing_orient_err - self.Kd_swing_rot * omega_swing
 
-        return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des
+
+        q_ref_arms = self.q_ref[self.arm_idx_q]        # reference angles, from your keyframe
+        q_arms = q[self.arm_idx_q]
+        dq_arms = dq[self.arm_idx_dq]
+
+        qdd_posture_des = self.Kp_posture * (q_ref_arms - q_arms) - self.Kd_posture * dq_arms
+
+        return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_posture_des
     
     def compute_control(self, q, dq, target_pos, target_vel, stance_foot):
-        J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq = self.compute_jacobians(q, dq, stance_foot)
-        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des = self.pd_control(q, dq, target_pos, target_vel, J_swing, J_torso, J_swing_rot)
+        J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq, arm_selection_matrix = self.compute_jacobians(q, dq, stance_foot)
+        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_posture_des = self.pd_control(q, dq, target_pos, target_vel, J_swing, J_torso, J_swing_rot)
 
         # Formulate and solve QP to get q̈ and contact forces λ
         D = self.data.M
@@ -131,33 +147,35 @@ class WholeBodyController:
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
 
-        w1, w2, w3, w4, w5 = 200.0, 8.0, 1.0, 1.0, 0.01
+        w_swing_pos, w_torso_orientation, w_com_height, w_swing_orientation, w_posture, w_reg = 200.0, 8.0, 1.0, 1.0, 1.0, 0.01
 
         # P matrix
         P = np.zeros((self.n_vars, self.n_vars))
-        P[0:self.nv, 0:self.nv] += w1 * J_swing.T @ J_swing      # swing foot
-        P[0:self.nv, 0:self.nv] += w2 * J_torso.T @ J_torso      # torso orientation
-        P[0:self.nv, 0:self.nv] += w3 * J_com_z.T @ J_com_z      # CoM height
-        P[0:self.nv, 0:self.nv] += w4 * J_swing_rot.T @ J_swing_rot
-        P[0:self.nv, 0:self.nv] += w5 * np.eye(self.nv)               # regularization
+        P[0:self.nv, 0:self.nv] += w_swing_pos * J_swing.T @ J_swing      # Swing Foot Position
+        P[0:self.nv, 0:self.nv] += w_torso_orientation * J_torso.T @ J_torso      # Torso Orientation
+        P[0:self.nv, 0:self.nv] += w_com_height * J_com_z.T @ J_com_z      # CoM height
+        P[0:self.nv, 0:self.nv] += w_swing_orientation * J_swing_rot.T @ J_swing_rot # Swing Foot Orientation
+        P[0:self.nv, 0:self.nv] += w_posture * arm_selection_matrix.T @ arm_selection_matrix # Posture Regularization
+        P[0:self.nv, 0:self.nv] += w_reg * np.eye(self.nv)               # Regularization
         P[self.nv:self.n_vars, self.nv:self.n_vars] += 1e-6 * np.eye(3)  # small regularization on contact forces
 
         # q vector
         q_vec = np.zeros(self.n_vars)
-        q_vec[0:self.nv] += w1 * J_swing.T @ (Jdot_swing @ dq - xdd_swing_des)
-        q_vec[0:self.nv] += w2 * J_torso.T @ (Jdot_torso @ dq - alpha_torso_des)
-        q_vec[0:self.nv] += w3 * J_com_z.T @ (Jdot_com_z_dq - zdd_com_des)
-        q_vec[0:self.nv] += w4 * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
-        q_vec[0:self.nv] += w5 * np.zeros(self.nv) # regularization — zero desired acceleration
+        q_vec[0:self.nv] += w_swing_pos * J_swing.T @ (Jdot_swing @ dq - xdd_swing_des)
+        q_vec[0:self.nv] += w_torso_orientation * J_torso.T @ (Jdot_torso @ dq - alpha_torso_des)
+        q_vec[0:self.nv] += w_com_height * J_com_z.T @ (Jdot_com_z_dq - zdd_com_des)
+        q_vec[0:self.nv] += w_swing_orientation * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
+        q_vec[0:self.nv] += w_posture * arm_selection_matrix.T @ (-qdd_posture_des)
+        q_vec[0:self.nv] += w_reg * np.zeros(self.nv) # regularization — zero desired acceleration
 
         mu_pyramid = self.mu / np.sqrt(2)
         G_fric = np.zeros((5, self.n_vars))
         h_fric = np.zeros(5)
         G_fric[0, self.n_vars-1] = -1
-        G_fric[1, self.nv-2] =  1; G_fric[1, self.n_vars-1] = -mu_pyramid
-        G_fric[2, self.nv-2] = -1; G_fric[2, self.n_vars-1] = -mu_pyramid
-        G_fric[3, self.nv-1] =  1; G_fric[3, self.n_vars-1] = -mu_pyramid
-        G_fric[4, self.nv-1] = -1; G_fric[4, self.n_vars-1] = -mu_pyramid
+        G_fric[1, self.nv]   =  1; G_fric[1, self.n_vars-1] = -mu_pyramid
+        G_fric[2, self.nv]   = -1; G_fric[2, self.n_vars-1] = -mu_pyramid
+        G_fric[3, self.nv+1] =  1; G_fric[3, self.n_vars-1] = -mu_pyramid
+        G_fric[4, self.nv+1] = -1; G_fric[4, self.n_vars-1] = -mu_pyramid
 
         const_vec = C[6:, :] @ dq + G[6:]
         Tau_map   = np.hstack([D[6:, :], -J_stance[:, 6:].T])
@@ -167,8 +185,31 @@ class WholeBodyController:
             ACTUATOR_LIMITS + const_vec,
         ])
 
-        G_ineq = np.vstack([G_fric, G_tau])
-        h_ineq = np.concatenate([h_fric, h_tau])
+        # Joint Limits 
+        joint_limits_lower = self.model.lowerPositionLimit[7:]   # skip floating base's 7 q-entries
+        joint_limits_upper = self.model.upperPositionLimit[7:]
+
+        dt_lookahead = 0.1  # tune — bigger gives smoother deceleration approaching the limit
+
+        n_joints = self.nv - 6  # actuated joints only
+        G_jointlim = np.zeros((2 * n_joints, self.n_vars))
+        h_jointlim = np.zeros(2 * n_joints)
+
+        for i in range(n_joints):
+            qi = q[7 + i]      # position, offset for floating-base q layout
+            dqi = dq[6 + i]     # velocity, offset for floating-base v layout
+            q_min, q_max = joint_limits_lower[i], joint_limits_upper[i]
+
+            # upper bound
+            G_jointlim[2*i, 6+i] = 1
+            h_jointlim[2*i] = (2/dt_lookahead**2) * (q_max - qi - dt_lookahead*dqi)
+
+            # lower bound
+            G_jointlim[2*i+1, 6+i] = -1
+            h_jointlim[2*i+1] = -(2/dt_lookahead**2) * (q_min - qi - dt_lookahead*dqi)
+
+        G_ineq = np.vstack([G_fric, G_tau, G_jointlim])
+        h_ineq = np.concatenate([h_fric, h_tau, h_jointlim])
 
         x = solve_qp(P, q_vec, A=A_eq, b=b_eq, G=G_ineq, h=h_ineq, solver="quadprog")
 

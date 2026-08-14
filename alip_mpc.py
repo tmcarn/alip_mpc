@@ -42,17 +42,11 @@ def make_Q(H, q_L):
     return np.kron(np.eye(H), Q_block)
 
 class ALIP_MPC:
-    def __init__(self, T_s, H=10, dt_control=0.02):
-        model, _, _ = pin.buildModelsFromMJCF(XML_PATH)
-        
-        data = model.createData()
+    def __init__(self, pin_model, pin_data, T_s, H=10, dt_control=0.02):
+        self.pin_model = pin_model
+        self.pin_data = pin_data
 
-        # Determine CoM for the Model
-        q0 = pin.neutral(model)
-        q0[2] = 1.6  # set floating base to standing height from your MJCF
-        pin.centerOfMass(model, data, q0)
-
-        self.m = data.mass[0]
+        self.m = self.pin_data.mass[0]
         self.g = 9.81
         self.z_H = Z_H  # CoM height above ground
         self.W = STEP_WIDTH
@@ -106,8 +100,6 @@ class ALIP_MPC:
         '''
         # sigma for the FIRST horizon step, keyed to current stance foot.
         sigma0 = +1.0 if stance_foot == FOOT_NAMES[0] else -1.0
-
-        print(f"CMD VEL: {cmd_vel}")
 
         Ly_des = self.m * self.z_H * cmd_vel[0]          # forward command (0 for in-place)
 
