@@ -128,13 +128,13 @@ def run():
 
     pin_data = pin_model.createData()
 
-    # Build Arm Indecies
-    arm_idx_q = []
-    arm_idx_v = []
-    for name in ARM_LINKS:
-        jid = pin_model.getJointId(name)
-        arm_idx_q.append(pin_model.joints[jid].idx_q)
-        arm_idx_v.append(pin_model.joints[jid].idx_v)
+    # # Build Arm Indecies
+    # arm_idx_q = []
+    # arm_idx_v = []
+    # for name in ARM_LINKS:
+    #     jid = pin_model.getJointId(name)
+    #     arm_idx_q.append(pin_model.joints[jid].idx_q)
+    #     arm_idx_v.append(pin_model.joints[jid].idx_v)
 
     pin.forwardKinematics(pin_model, pin_data, q)
     pin.computeAllTerms(pin_model, pin_data, q, dq)
@@ -147,7 +147,7 @@ def run():
 
     mpc = ALIP_MPC(pin_model, pin_data, T_s, H=H, dt_control=dt)
     swing = SwingTrajectory(clearance=STEP_HEIGHT)
-    wbc = WholeBodyController(pin_model, pin_data, q_ref, arm_idx_q, arm_idx_v)
+    wbc = WholeBodyController(pin_model, pin_data, q_ref)
 
     controller = WalkingController(pin_model, pin_data, dt, mpc, wbc, swing)
 
