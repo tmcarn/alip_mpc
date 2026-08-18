@@ -42,11 +42,11 @@ def make_Q(H, q_L):
     return np.kron(np.eye(H), Q_block)
 
 class ALIP_MPC:
-    def __init__(self, pin_model, pin_data, T_s, H=10, dt_control=0.02):
-        self.pin_model = pin_model
-        self.pin_data = pin_data
+    def __init__(self, T_s, H=H, dt_control=0.02):
+        # self.pin_model = pin_model
+        # self.pin_data = pin_data
 
-        self.m = self.pin_data.mass[0]
+        self.m = 34.3942352 #self.pin_data.mass[0]
         self.g = 9.81
         self.z_H = Z_H  # CoM height above ground
         self.W = STEP_WIDTH
@@ -155,7 +155,7 @@ class ALIP_MPC:
         print("MPC QP solved. U:", U[:2])
         return U[:2]
     
-    def run_mpc(self, cmd_vel, steps=10):
+    def run_mpc(self, cmd_vel, steps=5):
         curr_world_u = [0, 0.1] # left foot stance
         stance_foot = FOOT_NAMES[0]
         swing_foot = FOOT_NAMES[1]
@@ -164,11 +164,22 @@ class ALIP_MPC:
 
         yc_des, Lx_des = self.lateral_orbit_closed_form(sigma)
 
+        print(f"Desired CoM position: {yc_des}")
+
+        # Ideal Initial ALIP State
+        # x = np.array([
+        #     0.0,        # xc: in-place → on-orbit value is 0
+        #     yc_des,     # yc on orbit
+        #     Lx_des,     # Lx on orbit
+        #     0.0,        # Ly: in-place → 0
+        # ])
+
+        # Realistic Initila ALIP State
         x = np.array([
-            0.0,        # xc: in-place → on-orbit value is 0
-            yc_des,     # yc on orbit
-            Lx_des,     # Lx on orbit
-            0.0,        # Ly: in-place → 0
+            0.00767666,
+            0.11842656,
+            0,
+            0,
         ])
 
         com_traj = []
@@ -216,7 +227,7 @@ if __name__ == "__main__":
     T_s = STEP_DURATION
     model = ALIP_MPC(T_s)
 
-    com_traj, foot_traj = model.run_mpc([0,0])
+    com_traj, foot_traj = model.run_mpc([0.0,0.0])
     model.plot_steps(com_traj, foot_traj)
 
 

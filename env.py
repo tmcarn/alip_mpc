@@ -33,9 +33,6 @@ class BipedEnv:
 
         mujoco.mj_forward(self.mj_model, self.mj_data)   # or mj_step — populates xpos/site_xpos from qpos
 
-        body_pos = self.mj_data.xpos[self.foot_body["right_foot"]].copy()
-
-        print("FOOT POS", body_pos) 
 
     def reset(self):
         mujoco.mj_resetDataKeyframe(self.mj_model, self.mj_data, self.key_id)

@@ -141,7 +141,7 @@ class WholeBodyController:
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
 
-        w_swing_pos, w_torso_orientation, w_com_height, w_swing_orientation, w_posture, w_reg = 200.0, 8.0, 1.0, 1.0, 1.0, 0.01
+        w_swing_pos, w_torso_orientation, w_com_height, w_swing_orientation, w_posture, w_reg = 100.0, 10.0, 5.0, 1.0, 0.25, 0.01
 
         # P matrix
         P = np.zeros((self.n_vars, self.n_vars))

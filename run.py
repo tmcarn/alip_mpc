@@ -145,7 +145,7 @@ def run():
     dt = env.mj_model.opt.timestep
     T_s = STEP_DURATION
 
-    mpc = ALIP_MPC(pin_model, pin_data, T_s, H=H, dt_control=dt)
+    mpc = ALIP_MPC(T_s, H=H, dt_control=dt)
     swing = SwingTrajectory(clearance=STEP_HEIGHT)
     wbc = WholeBodyController(pin_model, pin_data, q_ref)
 
