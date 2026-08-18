@@ -26,6 +26,8 @@ class BipedEnv:
             "left_foot":  mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "left_foot"),
         }
 
+        self.torso = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+
     def reset(self):
         mujoco.mj_resetDataKeyframe(self.mj_model, self.mj_data, 0)
         mujoco.mj_forward(self.mj_model, self.mj_data)

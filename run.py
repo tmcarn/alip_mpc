@@ -157,7 +157,7 @@ def run():
             swing_target=None, # yellow sphere (the current swing foot tracking target)
             footstep_plan=controller.final_swing_target, # magenta sphere (the MPC landing spot)
             com=controller.com_pos,
-            torso_body_id=None,
+            torso_body_id=env.torso,
             draw_world=True
         )
 
