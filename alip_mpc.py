@@ -42,13 +42,10 @@ def make_Q(H, q_L):
     return np.kron(np.eye(H), Q_block)
 
 class ALIP_MPC:
-    def __init__(self, T_s, H=H, dt_control=0.02):
-        # self.pin_model = pin_model
-        # self.pin_data = pin_data
-
-        self.m = 34.3942352 #self.pin_data.mass[0]
+    def __init__(self, T_s, mass, z_H, H=H, dt_control=0.02):
+        self.m = mass
         self.g = 9.81
-        self.z_H = Z_H  # CoM height above ground
+        self.z_H = z_H  # CoM height above ground
         self.W = STEP_WIDTH
 
         print(f"ALIP parameters: z_H={self.z_H:.2f} m")

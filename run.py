@@ -125,27 +125,21 @@ def run():
     q_ref = q # used for posture regularization
 
     pin_model, _, _ = pin.buildModelsFromMJCF(XML_PATH) 
-
     pin_data = pin_model.createData()
 
-    # # Build Arm Indecies
-    # arm_idx_q = []
-    # arm_idx_v = []
-    # for name in ARM_LINKS:
-    #     jid = pin_model.getJointId(name)
-    #     arm_idx_q.append(pin_model.joints[jid].idx_q)
-    #     arm_idx_v.append(pin_model.joints[jid].idx_v)
+    pin.computeSubtreeMasses(pin_model, pin_data)
+    robot_mass = pin_data.mass[0]   # total robot mass
 
     pin.forwardKinematics(pin_model, pin_data, q)
     pin.computeAllTerms(pin_model, pin_data, q, dq)
     pin.updateFramePlacements(pin_model, pin_data)
 
-    print("actual CoM height:", pin_data.com[0][2])
+    z_H = pin_data.com[0][2]
 
     dt = env.mj_model.opt.timestep
     T_s = STEP_DURATION
 
-    mpc = ALIP_MPC(T_s, H=H, dt_control=dt)
+    mpc = ALIP_MPC(T_s, robot_mass, z_H, H=H, dt_control=dt)
     swing = SwingTrajectory(clearance=STEP_HEIGHT)
     wbc = WholeBodyController(pin_model, pin_data, q_ref)
 
