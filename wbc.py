@@ -32,11 +32,11 @@ class WholeBodyController:
         # torso orientation: stiff, well-damped
         self.Kp_torso, self.Kd_torso = 100.0, 20.0
         # CoM height: moderate
-        self.Kp_com, self.Kd_com = 100.0, 20.0
+        self.Kp_com, self.Kd_com = 400.0, 100.0
         # Swing Foot Orientation
         self.Kp_swing_rot, self.Kd_swing_rot = 100.0, 20.0
         # Posture Regularization
-        self.Kp_posture, self.Kd_posture = 100.0, 20.0
+        self.Kp_posture, self.Kd_posture = 200.0, 100.0
 
     def compute_jacobians(self, q, dq, stance_foot):
         # Get frame IDs
