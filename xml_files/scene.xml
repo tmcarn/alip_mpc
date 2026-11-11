@@ -1,0 +1,14 @@
+<mujoco model="scene">
+    <include file="humanoid_3D.xml"/>
+
+    <include file="box.xml"/>
+
+    <!-- humanoid_3D.xml has no ground/light of its own (the biped file does;
+         if you switch back to it, this floor is redundant but harmless) -->
+    <worldbody>
+        <light name="sun" directional="true" dir="-1 -1 -2" castshadow="true"
+            diffuse="1.2 1.2 1.2" specular="0.3 0.3 0.3" ambient="0.3 0.3 0.3"/>
+        <geom name="floor" type="plane" size="50 50 0.1" rgba="0.3 0.3 0.3 1"/>
+    </worldbody>
+
+</mujoco>

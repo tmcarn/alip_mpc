@@ -43,7 +43,7 @@ def make_Q(H, q_L):
 
 class ALIP_MPC:
     def __init__(self, T_s, H=10, dt_control=0.02):
-        model, _, _ = pin.buildModelsFromMJCF("xml_files/biped_3d_5dof_leg.xml")
+        model, _, _ = pin.buildModelsFromMJCF(ROBOT_PATH)
         
         data = model.createData()
 

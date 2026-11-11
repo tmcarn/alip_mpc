@@ -18,12 +18,12 @@ class WalkingController:
 
         self.feet = ["right_foot", "left_foot"]
         self.stance_foot = self.feet[1]
-        self.stance_id = self.pin_model.getFrameId(self.stance_foot)
+        self.stance_id = self.pin_model.getFrameId(self.stance_foot, pin.FrameType.BODY)
 
         self.swing_foot = self.feet[0]
-        self.swing_id = self.pin_model.getFrameId(self.swing_foot)
+        self.swing_id = self.pin_model.getFrameId(self.swing_foot, pin.FrameType.BODY)
         
-        self.torso_id = self.pin_model.getFrameId("torso")
+        self.torso_id = self.pin_model.getFrameId("torso", pin.FrameType.BODY)
 
         self.T_s = STEP_DURATION  # step duration in seconds
         self.dt = dt  # control timestep
@@ -35,7 +35,7 @@ class WalkingController:
         self.swing_planner:SwingTrajectory = swing_planner
         self.wbc:WholeBodyController = wbc
 
-        self.cmd_vel = np.array([-0.0, 0.3])  # [forward, lateral] command velocity])
+        self.cmd_vel = np.array([0.5, 0.0])  # [forward, lateral] command velocity])
 
         self.final_swing_target = None
         self.swing_target = None
@@ -67,7 +67,7 @@ class WalkingController:
         return np.concatenate([r[:2], L_contact[:2]])  # x, y com position (w.r.t. stance foot) and Lx, Ly (contact angular momentum)
 
     def get_foot_pos(self, foot_name):
-        foot_id = self.pin_model.getFrameId(foot_name)
+        foot_id = self.pin_model.getFrameId(foot_name, pin.FrameType.BODY)  # BODY: sites share these names
         foot_pos = self.pin_data.oMf[foot_id].translation.copy()  # world frame position (3,)
         return foot_pos
     
@@ -82,7 +82,8 @@ class WalkingController:
         past_max = self.phase_counter >= int(MAX_FRAC * self.steps_per_phase)
         touched_down = past_min and swing_pos[2] <= HEIGHT_EPS
 
-        if touched_down or past_max:
+        first_step = self.final_swing_target is None  # always plan on the first tick
+        if touched_down or past_max or first_step:
         # if self.phase_counter >= self.steps_per_phase: # impact has occured
             self.phase_counter = 0
 
@@ -111,7 +112,7 @@ class WalkingController:
         # Caluclate tau, based on swing foot and swing target
         # --- WBC ---
         tau = self.wbc.compute_control(q, dq, self.swing_target, self.swing_vel_target, self.stance_foot)
-        tau = np.clip(tau, -ACTUATOR_LIMIT, ACTUATOR_LIMIT)
+        tau = np.clip(tau, -self.wbc.tau_limits, self.wbc.tau_limits)
 
         self.phase_counter += 1
 
@@ -119,10 +120,11 @@ class WalkingController:
 
 
 def run():
-    env = BipedEnv(XML_PATH)
+    env = BipedEnv(SCENE_PATH)
     q, dq = env.reset()
+    q, dq = env.set_joint_angles(ARM_SETPOINTS)  # start the arms at their setpoints (no initial swing)
 
-    pin_model, _, _ = pin.buildModelsFromMJCF(XML_PATH)
+    pin_model, _, _ = pin.buildModelsFromMJCF(ROBOT_PATH)  # robot only (no box)
     pin_data = pin_model.createData()
 
     pin.computeAllTerms(pin_model, pin_data, q, dq)
@@ -133,7 +135,8 @@ def run():
 
     mpc = ALIP_MPC(T_s, H=H, dt_control=dt)
     swing = SwingTrajectory(clearance=0.1)
-    wbc = WholeBodyController(pin_model, pin_data)
+    # Arm posture to hold: the arm entries of q_ref (= ARM_SETPOINTS, set above)
+    wbc = WholeBodyController(pin_model, pin_data, tau_limits=env.tau_limits, q_ref=q)
 
     controller = WalkingController(pin_model, pin_data, dt, mpc, wbc, swing)
 

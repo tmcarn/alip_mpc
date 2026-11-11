@@ -24,8 +24,6 @@
         <!-- <geom name="ground" type="hfield" hfield="terrain" rgba="0.2 0.3 0.4 1"/> -->
 
 
-
-
         <!-- Torso -->
         <!-- <body name="torso" pos="0 0 1.6"> -->
         <body name="torso" pos="0 0 0">

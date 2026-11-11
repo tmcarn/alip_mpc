@@ -1,0 +1,109 @@
+<mujoco model="simple_biped_3d">
+    <compiler angle="degree"/>
+    <option timestep="0.001" gravity="0 0 -9.81"/>
+
+    <visual>
+        <global offwidth="1980" offheight="1080"/>
+    </visual>
+
+    <asset>
+        <texture type="skybox" builtin="flat" rgb1="1 1 1" rgb2="1 1 1" width="32" height="32"/>
+    </asset>
+
+    <worldbody>
+        <camera name="side_track" pos="0 -6 0.6" xyaxes="1 0 0 0 0 1" fovy="45"/>
+
+        <!-- pos must stay 0 0 0: Pinocchio adds body pos on top of the freejoint q,
+             so the standing height lives in the keyframe instead (as in the biped). -->
+        <body name="torso" pos="0 0 0">
+            <freejoint name="root"/>
+            <geom name="torso_geom" type="capsule" size="0.1 0.3" mass="8" rgba="0.8 0.2 0.2 1"/>
+
+            <!-- Right arm: shoulder yaw, roll, and pitch; one elbow hinge. -->
+            <body name="right_upper_arm" pos="0 -0.15 0.25">
+                <joint name="right_shoulder_yaw" type="hinge" axis="0 0 1" range="-90 90"/>
+                <joint name="right_shoulder_roll" type="hinge" axis="1 0 0" range="-90 90"/>
+                <joint name="right_shoulder_pitch" type="hinge" axis="0 1 0" range="-90 90"/>
+                <geom name="right_upper_arm_geom" type="capsule" size="0.05 0.2" mass="0.5" rgba="0.8 0.5 0.2 1" pos="0 -0.2 0" euler="90 0 0"/>
+                <body name="right_forearm" pos="0 -0.4 0">
+                    <joint name="right_elbow" type="hinge" axis="1 0 0" range="-120 0"/>
+                    <geom name="right_forearm_geom" type="capsule" size="0.04 0.2" mass="0.4" rgba="0.8 0.5 0.2 1" pos="0 -0.2 0" euler="90 0 0"/>
+                    <site name="right_hand" pos="0 -0.44 0" size="0.02" rgba="1 0 0 1"/>
+                </body>
+            </body>
+
+            <!-- Left arm: mirrored from the right. -->
+            <body name="left_upper_arm" pos="0 0.15 0.25">
+                <joint name="left_shoulder_yaw" type="hinge" axis="0 0 1" range="-90 90"/>
+                <joint name="left_shoulder_roll" type="hinge" axis="1 0 0" range="-90 90"/>
+                <joint name="left_shoulder_pitch" type="hinge" axis="0 1 0" range="-90 90"/>
+                <geom name="left_upper_arm_geom" type="capsule" size="0.05 0.2" mass="0.5" rgba="0.8 0.5 0.2 1" pos="0 0.2 0" euler="90 0 0"/>
+                <body name="left_forearm" pos="0 0.4 0">
+                    <joint name="left_elbow" type="hinge" axis="1 0 0" range="0 120"/>
+                    <geom name="left_forearm_geom" type="capsule" size="0.04 0.2" mass="0.4" rgba="0.8 0.5 0.2 1" pos="0 0.2 0" euler="90 0 0"/>
+                    <site name="left_hand" pos="0 0.44 0" size="0.02" rgba="1 0 0 1"/>
+                </body>
+            </body>
+
+            <!-- Right leg: hip yaw, roll, and pitch; one knee and ankle hinge. -->
+            <body name="right_thigh" pos="0 -0.1 -0.3">
+                <joint name="right_hip_yaw" type="hinge" axis="0 0 1" range="-60 60"/>
+                <joint name="right_hip_roll" type="hinge" axis="1 0 0" range="-45 45"/>
+                <joint name="right_hip_pitch" type="hinge" axis="0 1 0" range="-60 60"/>
+                <geom name="right_thigh_geom" type="capsule" size="0.07 0.3" mass="1" rgba="0.2 0.2 0.8 1" pos="0 0 -0.3"/>
+                <body name="right_shin" pos="0 0 -0.6">
+                    <joint name="right_knee" type="hinge" axis="0 1 0" range="5 120"/>
+                    <geom name="right_shin_geom" type="capsule" size="0.06 0.3" mass="1" rgba="0.2 0.2 0.8 1" pos="0 0 -0.3"/>
+                    <body name="right_foot" pos="0 0 -0.6">
+                        <joint name="right_ankle" type="hinge" axis="0 1 0" range="-60 60"/>
+                        <geom name="right_foot_geom" type="capsule" size="0.06 0.08" mass="0.1" rgba="0.2 0.2 0.8 1" euler="0 90 0" solref="0.001 1" solimp="0.99 0.99 0.001"/>
+                        <site name="right_foot" pos="0 0 -0.06" size="0.025" rgba="0 1 0 1"/>
+                    </body>
+                </body>
+            </body>
+
+            <!-- Left leg: mirrored from the right. -->
+            <body name="left_thigh" pos="0 0.1 -0.3">
+                <joint name="left_hip_yaw" type="hinge" axis="0 0 1" range="-60 60"/>
+                <joint name="left_hip_roll" type="hinge" axis="1 0 0" range="-45 45"/>
+                <joint name="left_hip_pitch" type="hinge" axis="0 1 0" range="-60 60"/>
+                <geom name="left_thigh_geom" type="capsule" size="0.07 0.3" mass="1" rgba="0.2 0.2 0.8 1" pos="0 0 -0.3"/>
+                <body name="left_shin" pos="0 0 -0.6">
+                    <joint name="left_knee" type="hinge" axis="0 1 0" range="5 120"/>
+                    <geom name="left_shin_geom" type="capsule" size="0.06 0.3" mass="1" rgba="0.2 0.2 0.8 1" pos="0 0 -0.3"/>
+                    <body name="left_foot" pos="0 0 -0.6">
+                        <joint name="left_ankle" type="hinge" axis="0 1 0" range="-60 60"/>
+                        <geom name="left_foot_geom" type="capsule" size="0.06 0.08" mass="0.1" rgba="0.2 0.2 0.8 1" euler="0 90 0" solref="0.001 1" solimp="0.99 0.99 0.001"/>
+                        <site name="left_foot" pos="0 0 -0.06" size="0.025" rgba="0 1 0 1"/>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+
+    <keyframe>
+        <!-- root: x y z qw qx qy qz, then 18 joints (arms, then legs) -->
+        <key name="stand" qpos="0 0 1.56 1 0 0 0  0 0 0 0  0 0 0 0  0 0 0 0 0  0 0 0 0 0"/>
+    </keyframe>
+
+    <actuator>
+        <motor joint="right_hip_yaw" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="right_hip_roll" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="right_hip_pitch" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="right_knee" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="right_ankle" ctrlrange="-20 20" forcerange="-20 20"/>
+        <motor joint="left_hip_yaw" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="left_hip_roll" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="left_hip_pitch" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="left_knee" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="left_ankle" ctrlrange="-20 20" forcerange="-20 20"/>
+        <motor joint="right_shoulder_yaw" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="right_shoulder_roll" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="right_shoulder_pitch" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="right_elbow" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="left_shoulder_yaw" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="left_shoulder_roll" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="left_shoulder_pitch" ctrlrange="-200 200" forcerange="-200 200"/>
+        <motor joint="left_elbow" ctrlrange="-200 200" forcerange="-200 200"/>
+    </actuator>
+</mujoco>
