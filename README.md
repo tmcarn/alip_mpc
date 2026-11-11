@@ -63,6 +63,10 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
 
 ## TODO
 - Add mechanics to track angular velocity as well for heading control
+   - Heading ref: at each impact, `Δψ = ψ_cmd · T_s`, `ψ_des += Δψ` (freeze heading frame for the step)
+   - Torso: ramp `R_des` from `Rz(ψ_prev)` to `Rz(ψ_prev + ½Δψ)` over the step (splits hip twist evenly, per Gibson et al. 2022)
+   - Swing foot: ramp yaw target to `Rz(ψ_prev + Δψ)` so it lands pointing the new heading
+   - MPC frame: rotate ALIP state + `cmd_vel` by `Rz(-ψ)` before `solve_mpc`, rotate `u` back by `Rz(ψ)` (otherwise step width / lateral bounds stay in world y)
 - Switch height based contact detection to joint torque based (invariant to unlevel terrain)
 - Modify MPC formulation to include intra-step dynamics, and friction constraints for more dynamic manuvers
 
