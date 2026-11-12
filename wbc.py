@@ -4,6 +4,19 @@ import pinocchio as pin
 import numpy as np
 from qpsolvers import solve_qp
 from constants import *
+from dataclasses import dataclass, field
+
+
+@dataclass
+class WBCReference:
+    '''Per-tick task-space references for the WBC (world frame). Defaults = old behavior.'''
+    swing_pos: np.ndarray                                                 # (3,)
+    swing_vel: np.ndarray = field(default_factory=lambda: np.zeros(3))    # (3,)
+    swing_rot: np.ndarray = field(default_factory=lambda: np.eye(3))      # (3,3)
+    swing_omega: np.ndarray = field(default_factory=lambda: np.zeros(3))  # (3,)
+    torso_rot: np.ndarray = field(default_factory=lambda: np.eye(3))      # (3,3)
+    torso_omega: np.ndarray = field(default_factory=lambda: np.zeros(3))  # (3,)
+
 
 class WholeBodyController:
 
@@ -62,22 +75,22 @@ class WholeBodyController:
        
         return  J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq
     
-    def pd_control(self, q, dq, target_pos, target_vel, J_swing, J_torso, J_swing_rot):
+    def pd_control(self, q, dq, ref: WBCReference, J_swing, J_torso, J_swing_rot):
         # Compute current swing foot position and velocity
         swing_foot_pos = self.data.oMf[self.swing_id].translation  # world frame position (3,)
         swing_foot_vel = J_swing @ dq  # world frame velocity (3,)
         # Desired accelerations (PD control)
         # print("target_pos:", target_pos)
         # print("swing_foot_pos:", swing_foot_pos)
-        pos_error = target_pos - swing_foot_pos
+        pos_error = ref.swing_pos - swing_foot_pos
         # print("pos_error:", pos_error)
-        vel_error = target_vel - swing_foot_vel  # desired velocity is zero at target
+        vel_error = ref.swing_vel - swing_foot_vel
         xdd_swing_des = self.Kp_swing * pos_error + self.Kd_swing * vel_error
 
         # current torso orientation as rotation matrix
         R_torso = self.data.oMf[self.torso_id].rotation
-        # desired orientation is identity (upright)
-        R_des = np.eye(3)
+        # desired orientation: upright, yawed to the heading reference
+        R_des = ref.torso_rot
         # orientation error — difference between current and desired rotation
         # standard approach is the rotation error vector
         R_error = R_des @ R_torso.T  # error rotation matrix
@@ -85,7 +98,7 @@ class WholeBodyController:
         orientation_error = pin.log3(R_error)  # shape (3,)
         # current torso angular velocity
         omega_torso = J_torso @ dq  # shape (3,)
-        alpha_torso_des = self.Kp_torso * orientation_error - self.Kd_torso * omega_torso
+        alpha_torso_des = self.Kp_torso * orientation_error + self.Kd_torso * (ref.torso_omega - omega_torso)
 
         # Current CoM position and velocity
         com_pos = self.data.com[0]  # world frame CoM position (3,)
@@ -95,19 +108,19 @@ class WholeBodyController:
         com_vel_z = com_vel[2]
         zdd_com_des = self.Kp_com * height_error - self.Kd_com * com_vel_z
 
-        # swing foot orientation: keep foot level (identity target)
+        # swing foot orientation: level, yawed to the landing heading reference
         R_swing = self.data.oMf[self.swing_id].rotation
-        R_swing_des = np.eye(3)               # level foot
+        R_swing_des = ref.swing_rot
         R_err_swing = R_swing_des @ R_swing.T
         swing_orient_err = pin.log3(R_err_swing)
         omega_swing = J_swing_rot @ dq
-        alpha_swing_des = self.Kp_swing_rot * swing_orient_err - self.Kd_swing_rot * omega_swing
+        alpha_swing_des = self.Kp_swing_rot * swing_orient_err + self.Kd_swing_rot * (ref.swing_omega - omega_swing)
 
         return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des
     
-    def compute_control(self, q, dq, target_pos, target_vel, stance_foot):
+    def compute_control(self, q, dq, ref: WBCReference, stance_foot):
         J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq = self.compute_jacobians(q, dq, stance_foot)
-        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des = self.pd_control(q, dq, target_pos, target_vel, J_swing, J_torso, J_swing_rot)
+        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des = self.pd_control(q, dq, ref, J_swing, J_torso, J_swing_rot)
 
         # Formulate and solve QP to get q̈ and contact forces λ
         D = self.data.M

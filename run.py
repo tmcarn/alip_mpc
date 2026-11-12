@@ -4,15 +4,18 @@ from constants import *
 import pinocchio as pin
 
 from env import BipedEnv
+
 from swingtraj import SwingTrajectory
+from torsotraj import TorsoYawTrajectory
+
 from alip_mpc import ALIP_MPC
-from wbc import WholeBodyController
+from wbc import WholeBodyController, WBCReference
 
 from debug_viz import DebugVisualizer
 from logger import Logger
 
 class WalkingController:
-    def __init__(self, model, data, dt, mpc, wbc, swing_planner):
+    def __init__(self, model, data, dt, mpc, wbc, swing_planner, torso_yaw_planner):
         self.pin_model = model
         self.pin_data = data 
 
@@ -32,10 +35,16 @@ class WalkingController:
         self.phase_counter = self.steps_per_phase # initialized to force a switch immediately (stance = left, swing = right)
 
         self.mpc:ALIP_MPC = mpc
-        self.swing_planner:SwingTrajectory = swing_planner
         self.wbc:WholeBodyController = wbc
 
-        self.cmd_vel = np.array([-0.0, 0.3])  # [forward, lateral] command velocity])
+        self.swing_planner:SwingTrajectory = swing_planner
+        self.torso_yaw_planner:TorsoYawTrajectory = torso_yaw_planner   
+        
+        self.cmd_lin_vel = np.array([-0.3, 0.0])  # [forward, lateral] command velocity])
+        self.cmd_yaw_rate = 0.3  # yaw rate command (rad/s)
+
+        self.heading = 0.0  # current heading (yaw) of the robot in world frame
+        self.des_heading = 0.0  # desired heading (yaw) of the robot in world frame
 
         self.final_swing_target = None
         self.swing_target = None
@@ -83,8 +92,10 @@ class WalkingController:
         touched_down = past_min and swing_pos[2] <= HEIGHT_EPS
 
         if touched_down or past_max:
-        # if self.phase_counter >= self.steps_per_phase: # impact has occured
             self.phase_counter = 0
+
+            # # Calculate Desired Heading based on commanded yaw rate, step duration, and current heading
+            # self.des_heading += self.cmd_yaw_rate * self.T_s
 
             # the foot that was swinging has landed -> becomes new stance foot and vice versa
             self.stance_foot, self.swing_foot = self.swing_foot, self.stance_foot
@@ -93,24 +104,52 @@ class WalkingController:
             # Only on impact, calculate next footstep location
             x = self.get_ALIP_state(q, dq)
             print("ALIP STATE: ", x)
-            u = self.mpc.solve_mpc(x, self.cmd_vel, self.stance_foot)
+            u = self.mpc.solve_mpc(x, self.cmd_lin_vel, self.stance_foot)
             new_stance_pos = self.get_foot_pos(self.stance_foot)
             self.final_swing_target = new_stance_pos + np.array([u[0], u[1], 0.0])
             self.final_swing_target[2] = 0.05
 
             # self.final_swing_target = self.get_foot_pos(self.swing_foot) # Used for standing still
-            self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target) # (Initial Position , Final Position)
-        
+            self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target,
+                                     self.pin_data.oMf[self.pin_model.getFrameId(self.swing_foot)].rotation, self.cmd_yaw_rate) # (Initial Position , Final Position, Initial Rotation, Cmd Yaw Rate)
+            self.torso_yaw_planner.reset(self.pin_data.oMf[self.torso_id].rotation, self.cmd_yaw_rate) # (Initial Rotation, Cmd Yaw Rate)
+
+            print("-" * 50)
+            print("Torso Yaw Planner Reset: ")
+            print("Start Yaw:", self.torso_yaw_planner.start_yaw)
+            print("Target Yaw:", self.torso_yaw_planner.target_yaw)
+            print("-" * 50)
+
         # print("Swing Foot Position:", self.get_foot_pos(self.swing_foot))
         # --- per-tick swing target ---
         t_phase = self.phase_counter * self.dt
+
+        # Foot Position and Velocity Targets
         self.swing_target = self.swing_planner.get_target(t_phase)
         self.swing_vel_target = self.swing_planner.get_velocity(t_phase)
+
+        # Foot Rotation and Angular Velocity Targets
+        self.swing_foot_rot_target = self.swing_planner.get_rot_target(t_phase)
+        self.swing_foot_ang_vel_target = self.swing_planner.get_ang_velocity(t_phase)
+
+        # Torso Rotation and Angular Velocity Targets
+        self.torso_yaw_target = self.torso_yaw_planner.get_target(t_phase)
+        self.torso_yaw_vel_target = self.torso_yaw_planner.get_velocity(t_phase)
+
         # print("Swing Foot Target:", self.swing_target)
 
         # Caluclate tau, based on swing foot and swing target
         # --- WBC ---
-        tau = self.wbc.compute_control(q, dq, self.swing_target, self.swing_vel_target, self.stance_foot)
+        ref = WBCReference(
+            swing_pos=self.swing_target,
+            swing_vel=self.swing_vel_target,
+            swing_rot=self.swing_foot_rot_target,
+            swing_omega=self.swing_foot_ang_vel_target,
+            torso_rot=self.torso_yaw_target,
+            torso_omega=self.torso_yaw_vel_target,
+        )
+
+        tau = self.wbc.compute_control(q, dq, ref, self.stance_foot)
         tau = np.clip(tau, -ACTUATOR_LIMIT, ACTUATOR_LIMIT)
 
         self.phase_counter += 1
@@ -132,10 +171,13 @@ def run():
     T_s = STEP_DURATION
 
     mpc = ALIP_MPC(T_s, H=H, dt_control=dt)
+
     swing = SwingTrajectory(clearance=0.1)
+    torso_yaw = TorsoYawTrajectory(yaw_init=0.0)
+
     wbc = WholeBodyController(pin_model, pin_data)
 
-    controller = WalkingController(pin_model, pin_data, dt, mpc, wbc, swing)
+    controller = WalkingController(pin_model, pin_data, dt, mpc, wbc, swing, torso_yaw)
 
     print("START:", controller.get_foot_pos("left_foot"), controller.get_foot_pos("right_foot"))
 
