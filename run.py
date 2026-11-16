@@ -41,8 +41,8 @@ class WalkingController:
         self.swing_planner:SwingTrajectory = swing_planner
         self.torso_yaw_planner:TorsoYawTrajectory = torso_yaw_planner   
         
-        self.cmd_lin_vel = np.array([-0.3, 0.0])  # [forward, lateral] command velocity])
-        self.cmd_yaw_rate = -0.1  # yaw rate command (rad/s)
+        self.cmd_lin_vel = np.array([-0.6, 0.0])  # [forward, lateral] command velocity])
+        self.cmd_yaw_rate = -0.0  # yaw rate command (rad/s)
 
         self.heading = 0.0  # current heading (yaw) of the robot in world frame
         self.des_heading = 0.0  # desired heading (yaw) of the robot in world frame
@@ -237,7 +237,7 @@ def run():
         )
 
         env.render()
-        time.sleep(dt*1)
+        time.sleep(dt*10)
 
     env.close()
 

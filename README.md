@@ -60,15 +60,15 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
 - ✅ ~~Velocity tracking breaks down at about 0.1 m/s for lateral walking and 0.3 m/s for forwards walking~~
    - Solution: Reduced nominal center of mass height (z_H) from 1.3m to 1.2m
    - Velocity tracking increased to 0.5 m/s
+- ✅ ~~Feet are turning to track commanded angular velocity but foot placements are poor~~
+   - Issue: MPC assumes linear trajectory, and since it only planned once per footstep, plans were always out of date
+   - Solution: Include intra-step dynamics, to continously replan mid-step
+- ✅ ~~Robot turns correctly but maintains command velocity in the world frame not the local frame~~
+   - Solution: pass in local frame velocity into MPC, not global frame
 
 ## TODO
-- Add mechanics to track angular velocity as well for heading control
-   - Heading ref: at each impact, `Δψ = ψ_cmd · T_s`, `ψ_des += Δψ` (freeze heading frame for the step)
-   - Torso: ramp `R_des` from `Rz(ψ_prev)` to `Rz(ψ_prev + ½Δψ)` over the step (splits hip twist evenly, per Gibson et al. 2022)
-   - Swing foot: ramp yaw target to `Rz(ψ_prev + Δψ)` so it lands pointing the new heading
-   - MPC frame: rotate ALIP state + `cmd_vel` by `Rz(-ψ)` before `solve_mpc`, rotate `u` back by `Rz(ψ)` (otherwise step width / lateral bounds stay in world y)
 - Switch height based contact detection to joint torque based (invariant to unlevel terrain)
-- Modify MPC formulation to include intra-step dynamics, and friction constraints for more dynamic manuvers
+
 
 ## Residual RL
 - Tie this model based controller into previous work with Residual RL

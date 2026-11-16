@@ -36,7 +36,7 @@ class BipedEnv:
     def get_joint_state(self):
         q = self.mj_data.qpos.copy()
         dq = self.mj_data.qvel.copy()
-        return self.convert_q(q), dq
+        return self.convert_q(q), self.convert_dq(q, dq)
 
     def step(self, tau):
         # tau shape (10,) — actuated joints only
@@ -62,3 +62,18 @@ class BipedEnv:
         q_conv[3:7] = np.array([q[4], q[5], q[6], q[3]])  # wxyz -> xyzw
 
         return q_conv
+
+    def convert_dq(self, q, dq):
+        '''
+        Free-joint velocity convention differs:
+            MuJoCo:    [linear vel in WORLD frame, angular vel in LOCAL (base) frame]
+            Pinocchio: [linear vel in LOCAL frame, angular vel in LOCAL frame]
+        Rotate the linear part into the base frame. Without this, every velocity Pinocchio
+        computes (CoM velocity, momentum, Jacobian velocities, Coriolis) is rotated by the
+        base yaw -- invisible at zero heading, wrong as soon as the robot turns.
+        '''
+        R = np.zeros(9)
+        mujoco.mju_quat2Mat(R, q[3:7])  # MuJoCo qpos quaternion (wxyz), base -> world
+        dq_conv = dq.copy()
+        dq_conv[0:3] = R.reshape(3, 3).T @ dq[0:3]
+        return dq_conv
