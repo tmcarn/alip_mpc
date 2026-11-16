@@ -41,8 +41,8 @@ class WalkingController:
         self.swing_planner:SwingTrajectory = swing_planner
         self.torso_yaw_planner:TorsoYawTrajectory = torso_yaw_planner
 
-        self.cmd_lin_vel = np.array([0.5, 0.0])  # [forward, lateral] command velocity, body (stance foot) frame
-        self.cmd_yaw_rate = 0.4  # yaw rate command (rad/s)
+        self.cmd_lin_vel = np.array([0.0, 0.0])  # [forward, lateral] command velocity, body (stance foot) frame
+        self.cmd_yaw_rate = 0.5  # yaw rate command (rad/s)
 
         self.final_swing_target = None
         self.swing_target = None

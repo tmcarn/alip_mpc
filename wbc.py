@@ -1,4 +1,5 @@
 from pyexpat import model
+from typing import Optional
 
 import pinocchio as pin
 import numpy as np
@@ -9,13 +10,28 @@ from dataclasses import dataclass, field
 
 @dataclass
 class WBCReference:
-    '''Per-tick task-space references for the WBC (world frame). Defaults = old behavior.'''
+    '''Per-tick task-space references for the WBC (world frame).'''
+    # Locomotion task references
     swing_pos: np.ndarray                                                 # (3,)
     swing_vel: np.ndarray = field(default_factory=lambda: np.zeros(3))    # (3,)
     swing_rot: np.ndarray = field(default_factory=lambda: np.eye(3))      # (3,3)
     swing_omega: np.ndarray = field(default_factory=lambda: np.zeros(3))  # (3,)
     torso_rot: np.ndarray = field(default_factory=lambda: np.eye(3))      # (3,3)
     torso_omega: np.ndarray = field(default_factory=lambda: np.zeros(3))  # (3,)
+
+    # Manipulation task references
+    # None -> that hand's task is off and its arm holds the posture setpoint
+    right_hand_pos:   Optional[np.ndarray] = None   # (3,)
+    right_hand_vel:   Optional[np.ndarray] = None   # (3,)  None -> zero
+    right_hand_force: Optional[np.ndarray] = None   # (3,) force ON the robot from the box (= +n·F/2), step 2
+
+    left_hand_pos:   Optional[np.ndarray] = None   # (3,)
+    left_hand_vel:   Optional[np.ndarray] = None   # (3,)
+    left_hand_force: Optional[np.ndarray] = None   # (3,) force ON the robot from the box (= +n·F/2), step 2
+
+
+
+
 
 class WholeBodyController:
 
@@ -46,6 +62,10 @@ class WholeBodyController:
                 self.arm_q_idx += list(range(jm.idx_q, jm.idx_q + jm.nq))
         self.S_arm = np.eye(self.nv)[self.arm_v_idx]  # selects arm dofs
 
+        # Hand frames. MJCF sites are loaded by Pinocchio as OP_FRAME (there is no FrameType.SITE)
+        self.right_hand_id = self.model.getFrameId("right_hand", pin.FrameType.OP_FRAME)
+        self.left_hand_id = self.model.getFrameId("left_hand", pin.FrameType.OP_FRAME)
+
         self.com_desired_height = Z_H
 
         self.mu = MU
@@ -61,8 +81,16 @@ class WholeBodyController:
         self.Kp_swing_rot, self.Kd_swing_rot = 100.0, 20.0
         # Arm posture hold
         self.Kp_arm, self.Kd_arm = 100.0, 20.0
+        # Hand position (critically damped: Kd = 2 sqrt(Kp))
+        self.Kp_hand, self.Kd_hand = 400.0, 40.0
+
+        # QP task weights
+        self.w_swing, self.w_torso, self.w_com, self.w_swing_rot, self.w_reg = 200.0, 8.0, 1.0, 1.0, 0.01
+        self.w_arm = 1.0         # arm posture hold
+        self.w_hand = 20.0       # keep well below w_swing; >> w_torso makes the torso lean to reach
 
     def compute_jacobians(self, q, dq, stance_foot):
+        '''Update the task Jacobians (and Jdot terms) stored on self for this tick.'''
         # Get frame IDs
         self.stance_id = self.model.getFrameId(stance_foot, pin.FrameType.BODY)
         self.swing_id = self.model.getFrameId("left_foot" if stance_foot == "right_foot" else "right_foot", pin.FrameType.BODY)
@@ -70,42 +98,48 @@ class WholeBodyController:
         pin.computeJointJacobians(self.model, self.data, q)
         pin.computeJointJacobiansTimeVariation(self.model, self.data, q, dq)
 
-        # stance foot
-        J_stance = pin.getFrameJacobian(self.model, self.data, self.stance_id, pin.LOCAL_WORLD_ALIGNED)[:3, :]
-        Jdot_stance = pin.getFrameJacobianTimeVariation(self.model, self.data, self.stance_id, pin.LOCAL_WORLD_ALIGNED)[:3, :]
+        frame = pin.LOCAL_WORLD_ALIGNED
 
-        # swing foot
-        J_swing = pin.getFrameJacobian(self.model, self.data, self.swing_id, pin.LOCAL_WORLD_ALIGNED)[:3, :]
-        Jdot_swing = pin.getFrameJacobianTimeVariation(self.model, self.data, self.swing_id, pin.LOCAL_WORLD_ALIGNED)[:3, :]
+        # stance foot (linear rows 0:3)
+        self.J_stance = pin.getFrameJacobian(self.model, self.data, self.stance_id, frame)[:3, :]
+        self.Jdot_stance = pin.getFrameJacobianTimeVariation(self.model, self.data, self.stance_id, frame)[:3, :]
 
-        # swing foot orientation (rotational rows 3:6)
-        J_swing_rot = pin.getFrameJacobian(self.model, self.data, self.swing_id, pin.LOCAL_WORLD_ALIGNED)[3:, :]
-        Jdot_swing_rot = pin.getFrameJacobianTimeVariation(self.model, self.data, self.swing_id, pin.LOCAL_WORLD_ALIGNED)[3:, :]
+        # swing foot: position (rows 0:3) and orientation (rows 3:6)
+        J_sw = pin.getFrameJacobian(self.model, self.data, self.swing_id, frame)
+        Jdot_sw = pin.getFrameJacobianTimeVariation(self.model, self.data, self.swing_id, frame)
+        self.J_swing, self.J_swing_rot = J_sw[:3, :], J_sw[3:, :]
+        self.Jdot_swing, self.Jdot_swing_rot = Jdot_sw[:3, :], Jdot_sw[3:, :]
+
+        # hands: position (rows 0:3) only, orientation is not used
+        J_rh = pin.getFrameJacobian(self.model, self.data, self.right_hand_id, frame)
+        Jdot_rh = pin.getFrameJacobianTimeVariation(self.model, self.data, self.right_hand_id, frame)
+        self.J_right_hand, self.Jdot_right_hand = J_rh[:3, :], Jdot_rh[:3, :]
+
+        J_lh = pin.getFrameJacobian(self.model, self.data, self.left_hand_id, frame)
+        Jdot_lh = pin.getFrameJacobianTimeVariation(self.model, self.data, self.left_hand_id, frame)
+        self.J_left_hand, self.Jdot_left_hand = J_lh[:3, :], Jdot_lh[:3, :]
 
         # torso orientation (rotational rows 3:6)
-        J_torso = pin.getFrameJacobian(self.model, self.data, self.torso_id, pin.LOCAL_WORLD_ALIGNED)[3:, :]
-        Jdot_torso = pin.getFrameJacobianTimeVariation(self.model, self.data, self.torso_id, pin.LOCAL_WORLD_ALIGNED)[3:, :]
+        self.J_torso = pin.getFrameJacobian(self.model, self.data, self.torso_id, frame)[3:, :]
+        self.Jdot_torso = pin.getFrameJacobianTimeVariation(self.model, self.data, self.torso_id, frame)[3:, :]
 
-        # compute CoM Jacobian
+        # CoM height
         J_com = pin.jacobianCenterOfMass(self.model, self.data, q)
-        J_com_z = J_com[2:3, :]  # shape (1, nv)
-        Jdot_com_dq = self.data.acom[0]  # shape (3,) — this is J_com_dot @ dq
-        Jdot_com_z_dq = Jdot_com_dq[2:3]  # z component only
-       
-        return  J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq
-    
-    def pd_control(self, q, dq, ref: WBCReference, J_swing, J_torso, J_swing_rot):
+        self.J_com_z = J_com[2:3, :]                  # (1, nv)
+        self.Jdot_com_z_dq = self.data.acom[0][2:3]   # (1,) z of J_com_dot @ dq
+
+    def pd_control(self, q, dq, ref: WBCReference):
         # Compute current swing foot position and velocity
         swing_foot_pos = self.data.oMf[self.swing_id].translation  # world frame position (3,)
-        swing_foot_vel = J_swing @ dq  # world frame velocity (3,)
-        # Desired accelerations (PD control)
-        # print("target_pos:", target_pos)
-        # print("swing_foot_pos:", swing_foot_pos)
+        swing_foot_vel = self.J_swing @ dq  # world frame velocity (3,)
+        
+        ''' Swing Foot Position and Velocity Control '''
         pos_error = ref.swing_pos - swing_foot_pos
-        # print("pos_error:", pos_error)
         vel_error = ref.swing_vel - swing_foot_vel
+
         xdd_swing_des = self.Kp_swing * pos_error + self.Kd_swing * vel_error
 
+        ''' Torso Orientation Control '''
         # current torso orientation as rotation matrix
         R_torso = self.data.oMf[self.torso_id].rotation
         # desired orientation: upright, yawed to the heading reference
@@ -116,33 +150,54 @@ class WholeBodyController:
         # convert to axis-angle (rotation vector)
         orientation_error = pin.log3(R_error)  # shape (3,)
         # current torso angular velocity
-        omega_torso = J_torso @ dq  # shape (3,)
+        omega_torso = self.J_torso @ dq  # shape (3,)
         alpha_torso_des = self.Kp_torso * orientation_error + self.Kd_torso * (ref.torso_omega - omega_torso)
 
-        # Current CoM position and velocity
+        '''CoM position and velocity '''
         com_pos = self.data.com[0]  # world frame CoM position (3,)
         com_vel = self.data.vcom[0]  # world frame CoM velocity (3,)
-        # Desired accelerations (PD control)
+
         height_error = self.com_desired_height - com_pos[2]
         com_vel_z = com_vel[2]
         zdd_com_des = self.Kp_com * height_error - self.Kd_com * com_vel_z
 
+        ''' Swing Foot Orientation Control '''
         # swing foot orientation: level, yawed to the landing heading reference
         R_swing = self.data.oMf[self.swing_id].rotation
         R_swing_des = ref.swing_rot
         R_err_swing = R_swing_des @ R_swing.T
         swing_orient_err = pin.log3(R_err_swing)
-        omega_swing = J_swing_rot @ dq
+        omega_swing = self.J_swing_rot @ dq
         alpha_swing_des = self.Kp_swing_rot * swing_orient_err + self.Kd_swing_rot * (ref.swing_omega - omega_swing)
 
+        ''' Arm Posture Control '''
         # arm posture: joint-space PD toward q_ref
         qdd_arm_des = self.Kp_arm * (self.q_ref[self.arm_q_idx] - q[self.arm_q_idx]) - self.Kd_arm * dq[self.arm_v_idx]
 
-        return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_arm_des
-    
+        ''' Hand Position Control (only hands with a reference) '''
+        hand_tasks = []  # (J, Jdot, xdd_des) per active hand
+        for fid, J, Jdot, p_des, v_des in (
+                (self.right_hand_id, self.J_right_hand, self.Jdot_right_hand, ref.right_hand_pos, ref.right_hand_vel),
+                (self.left_hand_id,  self.J_left_hand,  self.Jdot_left_hand,  ref.left_hand_pos,  ref.left_hand_vel)):
+            if p_des is None:
+                continue
+            v_des = np.zeros(3) if v_des is None else v_des
+            p = self.data.oMf[fid].translation  # world frame position (3,)
+            v = J @ dq                          # world frame velocity (3,)
+            xdd_des = self.Kp_hand * (p_des - p) + self.Kd_hand * (v_des - v)
+            hand_tasks.append((J, Jdot, xdd_des))
+
+        return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_arm_des, hand_tasks
+
     def compute_control(self, q, dq, ref: WBCReference, stance_foot):
-        J_stance, Jdot_stance, J_swing, Jdot_swing, J_swing_rot, Jdot_swing_rot, J_torso, Jdot_torso, J_com_z, Jdot_com_z_dq = self.compute_jacobians(q, dq, stance_foot)
-        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_arm_des = self.pd_control(q, dq, ref, J_swing, J_torso, J_swing_rot)
+        self.compute_jacobians(q, dq, stance_foot)
+        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_arm_des, hand_tasks = self.pd_control(q, dq, ref)
+
+        J_stance, Jdot_stance = self.J_stance, self.Jdot_stance
+        J_swing, Jdot_swing = self.J_swing, self.Jdot_swing
+        J_swing_rot, Jdot_swing_rot = self.J_swing_rot, self.Jdot_swing_rot
+        J_torso, Jdot_torso = self.J_torso, self.Jdot_torso
+        J_com_z, Jdot_com_z_dq = self.J_com_z, self.Jdot_com_z_dq
 
         # Formulate and solve QP to get q̈ and contact forces λ
         D = self.data.M
@@ -166,7 +221,7 @@ class WholeBodyController:
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
 
-        w1, w2, w3, w4, w5, w_arm = 200.0, 8.0, 1.0, 1.0, 0.01, 1.0
+        w1, w2, w3, w4, w5, w_arm = self.w_swing, self.w_torso, self.w_com, self.w_swing_rot, self.w_reg, self.w_arm
 
         # P matrix
         P = np.zeros((self.n_vars, self.n_vars))
@@ -176,6 +231,8 @@ class WholeBodyController:
         P[:nv, :nv] += w4 * J_swing_rot.T @ J_swing_rot
         P[:nv, :nv] += w5 * np.eye(nv)               # regularization
         P[:nv, :nv] += w_arm * self.S_arm.T @ self.S_arm  # arm posture
+        for J_h, _, _ in hand_tasks:                 # hand positions
+            P[:nv, :nv] += self.w_hand * J_h.T @ J_h
         P[nv:, nv:] += 1e-6 * np.eye(3)  # small regularization on contact forces
 
         # q vector
@@ -186,6 +243,8 @@ class WholeBodyController:
         q_vec[:nv] += w4 * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
         q_vec[:nv] += w5 * np.zeros(nv) # regularization — zero desired acceleration
         q_vec[:nv] += w_arm * self.S_arm.T @ (-qdd_arm_des)  # arm posture
+        for J_h, Jdot_h, xdd_h in hand_tasks:        # hand positions
+            q_vec[:nv] += self.w_hand * J_h.T @ (Jdot_h @ dq - xdd_h)
 
         mu_pyramid = self.mu / np.sqrt(2)
         G_fric = np.zeros((5, self.n_vars))
