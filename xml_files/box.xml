@@ -1,7 +1,7 @@
 <mujoco model="box_3d">
     <compiler angle="degree"/>
     <worldbody>
-        <body name="box" pos="1.5 0 0.5">
+        <body name="box" pos="1.0 0 0.5">
             <freejoint name="box_free"/>
             <geom name="box_geom" type="box" size="0.5 0.5 0.5" mass="5" 
             friction="0.5 0.005 0.0001" priority="1"

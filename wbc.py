@@ -85,7 +85,7 @@ class WholeBodyController:
         self.Kp_hand, self.Kd_hand = 400.0, 40.0
 
         # QP task weights
-        self.w_swing, self.w_torso, self.w_com, self.w_swing_rot, self.w_reg = 200.0, 8.0, 1.0, 1.0, 0.01
+        self.w_swing, self.w_torso, self.w_com, self.w_swing_rot, self.w_reg = 200.0, 1.0, 1.0, 1.0, 0.01
         self.w_arm = 1.0         # arm posture hold
         self.w_hand = 20.0       # keep well below w_swing; >> w_torso makes the torso lean to reach
 
@@ -174,30 +174,36 @@ class WholeBodyController:
         # arm posture: joint-space PD toward q_ref
         qdd_arm_des = self.Kp_arm * (self.q_ref[self.arm_q_idx] - q[self.arm_q_idx]) - self.Kd_arm * dq[self.arm_v_idx]
 
-        ''' Hand Position Control (only hands with a reference) '''
-        hand_tasks = []  # (J, Jdot, xdd_des) per active hand
-        for fid, J, Jdot, p_des, v_des in (
-                (self.right_hand_id, self.J_right_hand, self.Jdot_right_hand, ref.right_hand_pos, ref.right_hand_vel),
-                (self.left_hand_id,  self.J_left_hand,  self.Jdot_left_hand,  ref.left_hand_pos,  ref.left_hand_vel)):
-            if p_des is None:
-                continue
-            v_des = np.zeros(3) if v_des is None else v_des
-            p = self.data.oMf[fid].translation  # world frame position (3,)
-            v = J @ dq                          # world frame velocity (3,)
-            xdd_des = self.Kp_hand * (p_des - p) + self.Kd_hand * (v_des - v)
-            hand_tasks.append((J, Jdot, xdd_des))
+        ''' Right Hand Position Control '''
+        # no reference -> zero desired acceleration (the task weight is 0 in the QP)
+        xdd_r_hand_des = np.zeros(3)
+        if ref.right_hand_pos is not None:
+            r_hand_pos = self.data.oMf[self.right_hand_id].translation  # world frame position (3,)
+            r_hand_vel = self.J_right_hand @ dq                         # world frame velocity (3,)
+            r_hand_vel_des = np.zeros(3) if ref.right_hand_vel is None else ref.right_hand_vel
+            xdd_r_hand_des = self.Kp_hand * (ref.right_hand_pos - r_hand_pos) + self.Kd_hand * (r_hand_vel_des - r_hand_vel)
 
-        return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_arm_des, hand_tasks
+        ''' Left Hand Position Control '''
+        xdd_l_hand_des = np.zeros(3)
+        if ref.left_hand_pos is not None:
+            l_hand_pos = self.data.oMf[self.left_hand_id].translation  # world frame position (3,)
+            l_hand_vel = self.J_left_hand @ dq                         # world frame velocity (3,)
+            l_hand_vel_des = np.zeros(3) if ref.left_hand_vel is None else ref.left_hand_vel
+            xdd_l_hand_des = self.Kp_hand * (ref.left_hand_pos - l_hand_pos) + self.Kd_hand * (l_hand_vel_des - l_hand_vel)
+
+        return xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_arm_des, xdd_r_hand_des, xdd_l_hand_des
 
     def compute_control(self, q, dq, ref: WBCReference, stance_foot):
         self.compute_jacobians(q, dq, stance_foot)
-        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_arm_des, hand_tasks = self.pd_control(q, dq, ref)
+        xdd_swing_des, alpha_torso_des, zdd_com_des, alpha_swing_des, qdd_arm_des, xdd_r_hand_des, xdd_l_hand_des = self.pd_control(q, dq, ref)
 
         J_stance, Jdot_stance = self.J_stance, self.Jdot_stance
         J_swing, Jdot_swing = self.J_swing, self.Jdot_swing
         J_swing_rot, Jdot_swing_rot = self.J_swing_rot, self.Jdot_swing_rot
         J_torso, Jdot_torso = self.J_torso, self.Jdot_torso
         J_com_z, Jdot_com_z_dq = self.J_com_z, self.Jdot_com_z_dq
+        J_r_hand, Jdot_r_hand = self.J_right_hand, self.Jdot_right_hand
+        J_l_hand, Jdot_l_hand = self.J_left_hand, self.Jdot_left_hand
 
         # Formulate and solve QP to get q̈ and contact forces λ
         D = self.data.M
@@ -221,7 +227,17 @@ class WholeBodyController:
         b_eq[0:6] = -C_floating @ dq - G_floating
         b_eq[6:9] = -Jdot_stance @ dq
 
+        # Known external hand forces (force ON the robot from the box, world frame).
+        # Dynamics: M qdd + C dq + g = S^T tau + J_st^T lambda + J_r^T f_r + J_l^T f_l
+        f_r_hand = np.zeros(3) if ref.right_hand_force is None else ref.right_hand_force
+        f_l_hand = np.zeros(3) if ref.left_hand_force is None else ref.left_hand_force
+        # floating-base rows: the hand forces act on the base like the stance force does
+        b_eq[0:6] += J_r_hand[:, :6].T @ f_r_hand + J_l_hand[:, :6].T @ f_l_hand
+
         w1, w2, w3, w4, w5, w_arm = self.w_swing, self.w_torso, self.w_com, self.w_swing_rot, self.w_reg, self.w_arm
+        # hand tasks are only on when they have a reference
+        w_r_hand = self.w_hand if ref.right_hand_pos is not None else 0.0
+        w_l_hand = self.w_hand if ref.left_hand_pos is not None else 0.0
 
         # P matrix
         P = np.zeros((self.n_vars, self.n_vars))
@@ -231,8 +247,8 @@ class WholeBodyController:
         P[:nv, :nv] += w4 * J_swing_rot.T @ J_swing_rot
         P[:nv, :nv] += w5 * np.eye(nv)               # regularization
         P[:nv, :nv] += w_arm * self.S_arm.T @ self.S_arm  # arm posture
-        for J_h, _, _ in hand_tasks:                 # hand positions
-            P[:nv, :nv] += self.w_hand * J_h.T @ J_h
+        P[:nv, :nv] += w_r_hand * J_r_hand.T @ J_r_hand  # right hand position
+        P[:nv, :nv] += w_l_hand * J_l_hand.T @ J_l_hand  # left hand position
         P[nv:, nv:] += 1e-6 * np.eye(3)  # small regularization on contact forces
 
         # q vector
@@ -243,8 +259,8 @@ class WholeBodyController:
         q_vec[:nv] += w4 * J_swing_rot.T @ (Jdot_swing_rot @ dq - alpha_swing_des)
         q_vec[:nv] += w5 * np.zeros(nv) # regularization — zero desired acceleration
         q_vec[:nv] += w_arm * self.S_arm.T @ (-qdd_arm_des)  # arm posture
-        for J_h, Jdot_h, xdd_h in hand_tasks:        # hand positions
-            q_vec[:nv] += self.w_hand * J_h.T @ (Jdot_h @ dq - xdd_h)
+        q_vec[:nv] += w_r_hand * J_r_hand.T @ (Jdot_r_hand @ dq - xdd_r_hand_des)  # right hand position
+        q_vec[:nv] += w_l_hand * J_l_hand.T @ (Jdot_l_hand @ dq - xdd_l_hand_des)  # left hand position
 
         mu_pyramid = self.mu / np.sqrt(2)
         G_fric = np.zeros((5, self.n_vars))
@@ -256,6 +272,8 @@ class WholeBodyController:
         G_fric[4, nv+1] = -1; G_fric[4, nv+2] = -mu_pyramid
 
         const_vec = C[6:, :] @ dq + G[6:]
+        # torque-limit rows: tau = D_a qdd + C_a dq + g_a - J_st,a^T lambda - J_h,a^T f_h
+        const_vec -= J_r_hand[:, 6:].T @ f_r_hand + J_l_hand[:, 6:].T @ f_l_hand
         Tau_map   = np.hstack([D[6:, :], -J_stance[:, 6:].T])
         G_tau = np.vstack([Tau_map, -Tau_map])
         h_tau = np.concatenate([
@@ -294,7 +312,8 @@ class WholeBodyController:
         # print("commanded swing acc:", foot_acc_commanded)
         # print()
         # ---- solve for tau ---- #
-        tau_full = D @ qdd + C @ dq + G - J_stance.T @ lambda_contact
+        tau_full = (D @ qdd + C @ dq + G - J_stance.T @ lambda_contact
+                    - J_r_hand.T @ f_r_hand - J_l_hand.T @ f_l_hand)  # the box supplies part of the hand force
         if np.any(np.abs(tau_full[6:]) > self.tau_limits + 1e-3):
             print(f"WARNING: torque limit exceeded! max |tau|/limit = {np.max(np.abs(tau_full[6:]) / self.tau_limits):.2f}")
         tau = tau_full[6:]  # actuated joints only

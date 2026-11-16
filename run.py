@@ -41,12 +41,44 @@ class WalkingController:
         self.swing_planner:SwingTrajectory = swing_planner
         self.torso_yaw_planner:TorsoYawTrajectory = torso_yaw_planner
 
-        self.cmd_lin_vel = np.array([0.0, 0.0])  # [forward, lateral] command velocity, body (stance foot) frame
-        self.cmd_yaw_rate = 0.5  # yaw rate command (rad/s)
+        self.cmd_lin_vel = np.array([0.5, 0.0])  # [forward, lateral] command velocity, body (stance foot) frame
+        self.cmd_yaw_rate = 0.3  # yaw rate command (rad/s)
 
         self.final_swing_target = None
         self.swing_target = None
         self.com_pos = None
+
+        # Hand hold test: hand targets fixed relative to the torso (yaw frame), carried along while walking
+        self.hand_offsets = {                      # [forward, lateral] in the torso yaw frame (m)
+            "right_hand": np.array([0.55, -0.25]),
+            "left_hand":  np.array([0.55,  0.25]),
+        }
+        self.hand_height = 0.75                     # world z (m), fixed
+        self.hand_vel_ff = True                    # feed the targets' velocity forward (False -> v_des = 0, hands lag)
+
+    def get_hand_reference(self):
+        '''
+        Hand targets that move with the torso: p = p_torso + R_yaw @ offset, at a fixed world height.
+        Velocity of a point rigidly attached to the torso's yaw frame: v = v_torso + w_z x (p - p_torso).
+        Returns {hand: (pos (3,), vel (3,) or None)}, world frame.
+        '''
+        T_torso = self.pin_data.oMf[self.torso_id]
+        R_yaw = Rz(yaw_from_R(T_torso.rotation))  # yaw only, so pitch/roll wobble doesn't move the targets
+        # torso frame velocity (needs forwardKinematics with dq, done by computeAllTerms in the main loop)
+        v_torso = pin.getFrameVelocity(self.pin_model, self.pin_data, self.torso_id, pin.LOCAL_WORLD_ALIGNED)
+        w_z = np.array([0.0, 0.0, v_torso.angular[2]])
+
+        refs = {}
+        for hand, off in self.hand_offsets.items():
+            r = R_yaw @ np.array([off[0], off[1], 0.0])  # horizontal offset, world frame
+            pos = T_torso.translation + r
+            pos[2] = self.hand_height
+            vel = None
+            if self.hand_vel_ff:
+                vel = v_torso.linear + np.cross(w_z, r)
+                vel[2] = 0.0                         # fixed height
+            refs[hand] = (pos, vel)
+        return refs
 
 
     def get_ALIP_state(self, q, dq):
@@ -163,6 +195,7 @@ class WalkingController:
 
         # Caluclate tau, based on swing foot and swing target
         # --- WBC ---
+        hand_ref = self.get_hand_reference()  # hands held in front of the torso, moving with it
         ref = WBCReference(
             swing_pos=self.swing_target,
             swing_vel=self.swing_vel_target,
@@ -170,6 +203,12 @@ class WalkingController:
             swing_omega=self.swing_foot_ang_vel_target,
             torso_rot=self.torso_yaw_target,
             torso_omega=self.torso_yaw_vel_target,
+            right_hand_pos=hand_ref["right_hand"][0],
+            right_hand_vel=hand_ref["right_hand"][1],
+            right_hand_force=None,  # TODO: add box force sensing
+            left_hand_pos=hand_ref["left_hand"][0],
+            left_hand_vel=hand_ref["left_hand"][1],
+            left_hand_force=None,  # TODO: add box force sensing
         )
 
         tau = self.wbc.compute_control(q, dq, ref, self.stance_foot)
