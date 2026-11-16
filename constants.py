@@ -18,3 +18,6 @@ ARM_SETPOINTS = {
 MIN_FRAC = 0.6          # don't even check for touchdown before this fraction of the nominal step
 MAX_FRAC = 1.4          # force the switch here regardless, in case contact is never detected
 HEIGHT_EPS = 0.06       # just above final_swing_target[2] (0.05) so it triggers on genuine touchdown
+
+REPLAN_PERIOD = 0.004   # s, mid-step MPC re-solve period (paper: 250 Hz)
+REPLAN_FREEZE_FRAC = 0.85  # stop re-solving after this fraction of the step (no last-moment target jumps)
