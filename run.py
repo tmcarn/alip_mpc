@@ -6,7 +6,7 @@ import pinocchio as pin
 from env import BipedEnv
 
 from swingtraj import SwingTrajectory
-from torsotraj import TorsoYawTrajectory
+from torsotraj import TorsoYawTrajectory, Rz, yaw_from_R
 
 from alip_mpc import ALIP_MPC
 from wbc import WholeBodyController, WBCReference
@@ -41,7 +41,7 @@ class WalkingController:
         self.torso_yaw_planner:TorsoYawTrajectory = torso_yaw_planner   
         
         self.cmd_lin_vel = np.array([-0.3, 0.0])  # [forward, lateral] command velocity])
-        self.cmd_yaw_rate = 0.3  # yaw rate command (rad/s)
+        self.cmd_yaw_rate = 0.5  # yaw rate command (rad/s)
 
         self.heading = 0.0  # current heading (yaw) of the robot in world frame
         self.des_heading = 0.0  # desired heading (yaw) of the robot in world frame
@@ -53,7 +53,9 @@ class WalkingController:
 
     def get_ALIP_state(self, q, dq):
         '''
-        Map Robot Configuration to ALIP State [x_com, y_com, L_x, L_y]
+        Map Robot Configuration to ALIP State [x_com, y_com, L_x, L_y],
+        expressed in the stance foot frame: origin at the stance foot, axes rotated
+        by the stance foot's measured yaw (x = foot forward, y = foot left, z = world up).
         '''
         # Compute CoM position and velocity
         pin.forwardKinematics(self.pin_model, self.pin_data, q, dq)
@@ -73,13 +75,26 @@ class WalkingController:
         
         L_contact = L_com + np.cross(r, m * com_vel)  # total angular momentum about contact point
 
-        return np.concatenate([r[:2], L_contact[:2]])  # x, y com position (w.r.t. stance foot) and Lx, Ly (contact angular momentum)
+        # Rotate the world-aligned vectors into the stance foot frame (yaw only, so z stays
+        # gravity-up and the planar ALIP model is unchanged). r and L are both vectors,
+        # so they rotate the same way.
+        R_stance = self.get_foot_rot(self.stance_foot)
+        self.R_stance_yaw = Rz(yaw_from_R(R_stance))  # stance frame -> world (reused to map u back)
+        r_st = self.R_stance_yaw.T @ r
+        L_st = self.R_stance_yaw.T @ L_contact
+
+        return np.concatenate([r_st[:2], L_st[:2]])  # x, y com position and Lx, Ly (contact angular momentum), stance foot frame
 
     def get_foot_pos(self, foot_name):
         foot_id = self.pin_model.getFrameId(foot_name)
         foot_pos = self.pin_data.oMf[foot_id].translation.copy()  # world frame position (3,)
         return foot_pos
-    
+
+    def get_foot_rot(self, foot_name):
+            foot_id = self.pin_model.getFrameId(foot_name)
+            foot_rot = self.pin_data.oMf[foot_id].rotation.copy()  # world frame rotation (3, 3)
+            return foot_rot
+
     def compute_action(self, q, dq):
         ''' 
         Input: q, dq, and t, 
@@ -104,9 +119,10 @@ class WalkingController:
             # Only on impact, calculate next footstep location
             x = self.get_ALIP_state(q, dq)
             print("ALIP STATE: ", x)
-            u = self.mpc.solve_mpc(x, self.cmd_lin_vel, self.stance_foot)
+            u_st = self.mpc.solve_mpc(x, self.cmd_lin_vel, self.stance_foot)  # stance foot frame
+            u = self.R_stance_yaw @ np.array([u_st[0], u_st[1], 0.0])          # -> world frame
             new_stance_pos = self.get_foot_pos(self.stance_foot)
-            self.final_swing_target = new_stance_pos + np.array([u[0], u[1], 0.0])
+            self.final_swing_target = new_stance_pos + u
             self.final_swing_target[2] = 0.05
 
             # self.final_swing_target = self.get_foot_pos(self.swing_foot) # Used for standing still
@@ -204,7 +220,7 @@ def run():
         )
 
         env.render()
-        time.sleep(dt*1)
+        time.sleep(dt*4)
 
     env.close()
 
