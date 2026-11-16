@@ -32,6 +32,7 @@ class WalkingController:
         self.dt = dt  # control timestep
 
         self.steps_per_phase = int(self.T_s / self.dt)
+        self.replan_every = max(1, int(round(REPLAN_PERIOD / self.dt)))  # ticks between mid-step re-solves
         self.phase_counter = self.steps_per_phase # initialized to force a switch immediately (stance = left, swing = right)
 
         self.mpc:ALIP_MPC = mpc
@@ -41,7 +42,7 @@ class WalkingController:
         self.torso_yaw_planner:TorsoYawTrajectory = torso_yaw_planner   
         
         self.cmd_lin_vel = np.array([-0.3, 0.0])  # [forward, lateral] command velocity])
-        self.cmd_yaw_rate = 0.5  # yaw rate command (rad/s)
+        self.cmd_yaw_rate = -0.1  # yaw rate command (rad/s)
 
         self.heading = 0.0  # current heading (yaw) of the robot in world frame
         self.des_heading = 0.0  # desired heading (yaw) of the robot in world frame
@@ -95,6 +96,15 @@ class WalkingController:
             foot_rot = self.pin_data.oMf[foot_id].rotation.copy()  # world frame rotation (3, 3)
             return foot_rot
 
+    def replan(self, q, dq, t_elapsed):
+        '''Re-solve the MPC mid-step and move the swing foot's landing target.'''
+        x = self.get_ALIP_state(q, dq)  # stance foot frame
+        u_st = self.mpc.solve_mpc(x, self.cmd_lin_vel, self.stance_foot, t_elapsed=t_elapsed, verbose=False)
+        u = self.R_stance_yaw @ np.array([u_st[0], u_st[1], 0.0])  # -> world frame
+        self.final_swing_target = self.get_foot_pos(self.stance_foot) + u
+        self.final_swing_target[2] = 0.05
+        self.swing_planner.update_target(self.final_swing_target)
+
     def compute_action(self, q, dq):
         ''' 
         Input: q, dq, and t, 
@@ -135,6 +145,13 @@ class WalkingController:
             print("Start Yaw:", self.torso_yaw_planner.start_yaw)
             print("Target Yaw:", self.torso_yaw_planner.target_yaw)
             print("-" * 50)
+
+        # --- mid-step re-solve (Gibson et al. Eq. 9) ---
+        # Re-plan from the measured state, predicted to the end of the step, so model errors
+        # during the step (e.g. while turning) are corrected before touchdown.
+        elif (self.phase_counter % self.replan_every == 0
+              and self.phase_counter < REPLAN_FREEZE_FRAC * self.steps_per_phase):
+            self.replan(q, dq, self.phase_counter * self.dt)
 
         # print("Swing Foot Position:", self.get_foot_pos(self.swing_foot))
         # --- per-tick swing target ---
@@ -220,7 +237,7 @@ def run():
         )
 
         env.render()
-        time.sleep(dt*4)
+        time.sleep(dt*1)
 
     env.close()
 

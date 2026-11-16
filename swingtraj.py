@@ -35,6 +35,13 @@ class SwingTrajectory:
         self.start_yaw = self.target_yaw + np.arctan2(np.sin(meas - self.target_yaw),
                                                       np.cos(meas - self.target_yaw))
 
+    def update_target(self, target_pos):
+        '''
+        Mid-step replan: swap in a new landing position, keeping the start position,
+        start yaw and step timing (the paper keeps h_init and only updates p_des).
+        '''
+        self.target_pos = target_pos.copy()
+
     def get_target(self, t):
         '''
         Cosine-blended x-y interpolation (matches Gibson et al. virtual constraint

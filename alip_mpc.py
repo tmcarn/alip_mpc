@@ -97,7 +97,7 @@ class ALIP_MPC:
         return yc_des, Lx_des
 
 
-    def make_X_ref(self, cmd_vel, stance_foot):
+    def make_X_ref(self, cmd_vel, stance_foot, verbose=True):
         '''
         Build the MPC reference over horizon H.
         State per step: [xc, yc, Lx, Ly].
@@ -107,7 +107,8 @@ class ALIP_MPC:
         # sigma for the FIRST horizon step, keyed to current stance foot.
         sigma0 = +1.0 if stance_foot == "right_foot" else -1.0
 
-        print(f"CMD VEL: {cmd_vel}")
+        if verbose:
+            print(f"CMD VEL: {cmd_vel}")
 
         Ly_des = self.m * self.z_H * cmd_vel[0]          # forward command (0 for in-place)
 
@@ -125,7 +126,8 @@ class ALIP_MPC:
             X_ref[4 * i + 2] = Lx_des + Lx_offset
             X_ref[4 * i + 3] = Ly_des
 
-        print("ALIP DES:", X_ref[0:4], "Stance Foot:", stance_foot)
+        if verbose:
+            print("ALIP DES:", X_ref[0:4], "Stance Foot:", stance_foot)
         return X_ref
     
     def step_transition(self, x_minus, u):
@@ -141,8 +143,18 @@ class ALIP_MPC:
         x_plus = x_minus + (self.B @ u)
         return x_plus
 
-    def solve_mpc(self, x0, cmd_vel, stance_foot, r_reg=1e-4):
-        X_ref = self.make_X_ref(cmd_vel, stance_foot)
+    def solve_mpc(self, x0, cmd_vel, stance_foot, t_elapsed=0.0, r_reg=1e-4, verbose=True):
+        '''
+        x0:        measured ALIP state t_elapsed seconds into the current step (stance foot frame)
+        t_elapsed: time since the last impact. phi assumes a full T_s before the first impact,
+                   so x0 is back-propagated to the start of the step; phi @ x0 then equals the
+                   paper's Eq. 9 prediction exp(A(T_s - t)) x(t). t_elapsed = 0 -> unchanged.
+        '''
+        t_elapsed = float(np.clip(t_elapsed, 0.0, self.T_s))  # past T_s: impact is "now"
+        if t_elapsed > 0.0:
+            x0 = scipy.linalg.expm(-self.A * t_elapsed) @ x0
+
+        X_ref = self.make_X_ref(cmd_vel, stance_foot, verbose)
         b = self.phi @ x0 - X_ref
         # Small input regularization. Q only penalizes (Lx, Ly), so the final
         # footstep in the horizon (which affects only the unpenalized terminal
@@ -160,7 +172,8 @@ class ALIP_MPC:
         ub = np.array([b[1] for b in self.get_bounds(stance_foot)])
 
         U = solve_qp(P_scaled, q_scaled, lb=lb, ub=ub, solver="quadprog")
-        print("MPC QP solved. U:", U[:2])
+        if verbose:
+            print("MPC QP solved. U:", U[:2])
         return U[:2]
     
     def run_mpc(self, cmd_vel, steps=10):
