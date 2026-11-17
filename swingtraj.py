@@ -14,6 +14,13 @@ class SwingTrajectory:
         self.start_pos = start_pos.copy()
         self.target_pos = target_pos.copy()
 
+    def update_target(self, target_pos):
+        '''
+        Mid-step replan: swap in a new landing position, keeping the start position
+        and step timing (the paper keeps h_init and only updates p_des).
+        '''
+        self.target_pos = target_pos.copy()
+
     def get_target(self, t):
         '''
         Cosine-blended x-y interpolation (matches Gibson et al. virtual constraint

@@ -88,7 +88,7 @@ class ALIP_MPC:
         return yc_des, Lx_des
 
 
-    def make_X_ref(self, cmd_vel, stance_foot):
+    def make_X_ref(self, cmd_vel, stance_foot, verbose=True):
         '''
         Build the MPC reference over horizon H.
         State per step: [xc, yc, Lx, Ly].
@@ -114,7 +114,8 @@ class ALIP_MPC:
             X_ref[4 * i + 2] = Lx_des + Lx_offset
             X_ref[4 * i + 3] = Ly_des
 
-        print("ALIP DES:", X_ref[0:4], "Stance Foot:", stance_foot)
+        if verbose:
+            print("ALIP DES:", X_ref[0:4], "Stance Foot:", stance_foot)
         return X_ref
     
     def step_transition(self, x_minus, u):
@@ -130,8 +131,18 @@ class ALIP_MPC:
         x_plus = x_minus + (self.B @ u)
         return x_plus
 
-    def solve_mpc(self, x0, cmd_vel, stance_foot, r_reg=1e-4):
-        X_ref = self.make_X_ref(cmd_vel, stance_foot)
+    def solve_mpc(self, x0, cmd_vel, stance_foot, t_elapsed=0.0, r_reg=1e-4, verbose=True):
+        '''
+        x0:        ALIP state measured now
+        t_elapsed: time since the current step started (0 at impact). For a mid-step
+                   re-solve (Gibson et al. Eq. 9) the state is predicted to the end of the
+                   current step, exp(A (T_s - t)) x(t). phi's first block is Ad = exp(A T_s),
+                   so pass the equivalent start-of-step state exp(-A t) x(t) instead:
+                   Ad @ exp(-A t) x(t) = exp(A (T_s - t)) x(t).
+        '''
+        if t_elapsed > 0.0:
+            x0 = scipy.linalg.expm(-self.A * t_elapsed) @ x0
+        X_ref = self.make_X_ref(cmd_vel, stance_foot, verbose=verbose)
         b = self.phi @ x0 - X_ref
         # Small input regularization. Q only penalizes (Lx, Ly), so the final
         # footstep in the horizon (which affects only the unpenalized terminal
@@ -149,7 +160,8 @@ class ALIP_MPC:
         ub = np.array([b[1] for b in self.get_bounds(stance_foot)])
 
         U = solve_qp(P_scaled, q_scaled, lb=lb, ub=ub, solver="quadprog")
-        print("MPC QP solved. U:", U[:2])
+        if verbose:
+            print("MPC QP solved. U:", U[:2])
         return U[:2]
     
     def run_mpc(self, cmd_vel, steps=5):

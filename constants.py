@@ -31,3 +31,6 @@ FOOT_OFFSET = 0.03 # m (offset from frame origin to the ground, when foot is in 
 MIN_FRAC = 0.6          # don't check for touchdown before this fraction of the nominal step
 MAX_FRAC = 1.4          # force the switch here regardless, in case contact is never detected
 HEIGHT_EPS = FOOT_OFFSET + 0.008
+
+REPLAN_PERIOD = 0.004   # s, mid-step MPC re-solve period (Gibson et al.: 250 Hz)
+REPLAN_FREEZE_FRAC = 0.85  # stop re-solving after this fraction of the step (no last-moment target jumps)

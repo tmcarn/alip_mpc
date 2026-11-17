@@ -14,6 +14,19 @@ from wbc import WholeBodyController
 from debug_viz import DebugVisualizer
 from logger import Logger
 
+
+def Rz(psi):
+    '''Rotation about world z by psi.'''
+    c, s = np.cos(psi), np.sin(psi)
+    return np.array([[c, -s, 0.0],
+                     [s,  c, 0.0],
+                     [0.0, 0.0, 1.0]])
+
+
+def yaw_from_R(R):
+    '''Yaw (heading) of a rotation matrix.'''
+    return np.arctan2(R[1, 0], R[0, 0])
+
 class WalkingController:
     def __init__(self, model, data, dt, mpc, wbc, swing_planner):
         self.pin_model = model
@@ -32,13 +45,14 @@ class WalkingController:
         self.dt = dt  # control timestep
 
         self.steps_per_phase = int(self.T_s / self.dt)
+        self.replan_every = max(1, int(round(REPLAN_PERIOD / self.dt)))  # ticks between mid-step re-solves
         self.phase_counter = self.steps_per_phase # initialized to force a switch immediately (stance = left, swing = right)
 
         self.mpc:ALIP_MPC = mpc
         self.swing_planner:SwingTrajectory = swing_planner
         self.wbc:WholeBodyController = wbc
 
-        self.cmd_vel = np.array([0.0, 0.0])  # [forward, lateral] command velocity])
+        self.cmd_vel = np.array([0.5, 0.0])  # [forward, lateral] command velocity, body (stance foot) frame
 
         self.final_swing_target = None
         self.swing_target = None
@@ -47,7 +61,9 @@ class WalkingController:
 
     def get_ALIP_state(self, q, dq):
         '''
-        Map Robot Configuration to ALIP State [x_com, y_com, L_x, L_y]
+        Map Robot Configuration to ALIP State [x_com, y_com, L_x, L_y],
+        expressed in the stance foot frame: origin at the stance foot, axes rotated
+        by the stance foot's measured yaw (x = foot forward, y = foot left, z = world up).
         '''
         # Compute CoM position and velocity
         pin.forwardKinematics(self.pin_model, self.pin_data, q, dq)
@@ -67,13 +83,35 @@ class WalkingController:
         
         L_contact = L_com + np.cross(r, m * com_vel)  # total angular momentum about contact point
 
-        return np.concatenate([r[:2], L_contact[:2]])  # x, y com position (w.r.t. stance foot) and Lx, Ly (contact angular momentum)
+        # Rotate the world-aligned vectors into the stance foot frame (yaw only, so z stays
+        # gravity-up and the planar ALIP model is unchanged). r and L are both vectors,
+        # so they rotate the same way.
+        R_stance = self.get_foot_rot(self.stance_foot)
+        self.R_stance_yaw = Rz(yaw_from_R(R_stance))  # stance frame -> world (reused to map u back)
+        r_st = self.R_stance_yaw.T @ r
+        L_st = self.R_stance_yaw.T @ L_contact
+
+        return np.concatenate([r_st[:2], L_st[:2]])  # x, y com position and Lx, Ly (contact angular momentum), stance foot frame
 
     def get_foot_pos(self, foot_name):
         foot_id = self.pin_model.getFrameId(foot_name)
         foot_pos = self.pin_data.oMf[foot_id].translation.copy()  # world frame position (3,)
         return foot_pos
-    
+
+    def get_foot_rot(self, foot_name):
+        foot_id = self.pin_model.getFrameId(foot_name)
+        foot_rot = self.pin_data.oMf[foot_id].rotation.copy()  # world frame rotation (3, 3)
+        return foot_rot
+
+    def replan(self, q, dq, t_elapsed):
+        '''Re-solve the MPC mid-step and move the swing foot's landing target.'''
+        x = self.get_ALIP_state(q, dq)  # stance foot frame
+        u_st = self.mpc.solve_mpc(x, self.cmd_vel, self.stance_foot, t_elapsed=t_elapsed, verbose=False)
+        u = self.R_stance_yaw @ np.array([u_st[0], u_st[1], 0.0])  # -> world frame
+        self.final_swing_target = self.get_foot_pos(self.stance_foot) + u
+        self.final_swing_target[2] = FOOT_OFFSET
+        self.swing_planner.update_target(self.final_swing_target)
+
     def compute_action(self, q, dq):
         ''' 
         Input: q, dq, and t, 
@@ -94,14 +132,23 @@ class WalkingController:
             # Only on impact, calculate next footstep location
             x = self.get_ALIP_state(q, dq)
             print("ALIP STATE: ", x)
-            u = self.mpc.solve_mpc(x, self.cmd_vel, self.stance_foot)
+            u_st = self.mpc.solve_mpc(x, self.cmd_vel, self.stance_foot)  # stance foot frame
+            u = self.R_stance_yaw @ np.array([u_st[0], u_st[1], 0.0])     # -> world frame
             new_stance_pos = self.get_foot_pos(self.stance_foot)
-            self.final_swing_target = new_stance_pos + np.array([u[0], u[1], 0.0])
+            self.final_swing_target = new_stance_pos + u
             self.final_swing_target[2] = FOOT_OFFSET
 
             # self.final_swing_target = self.get_foot_pos(self.swing_foot) # Used for standing still
             self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target) # (Initial Position , Final Position)
-        
+
+        # --- mid-step re-solve (Gibson et al. Eq. 9) ---
+        # Re-plan from the measured state, predicted to the end of the step, so model errors
+        # during the step are corrected before touchdown. Frozen near the end of the step.
+        elif (self.final_swing_target is not None
+              and self.phase_counter % self.replan_every == 0
+              and self.phase_counter < REPLAN_FREEZE_FRAC * self.steps_per_phase):
+            self.replan(q, dq, self.phase_counter * self.dt)
+
         # --- per-tick swing target ---
         t_phase = self.phase_counter * self.dt
         self.swing_target = self.swing_planner.get_target(t_phase)
