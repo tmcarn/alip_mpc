@@ -8,27 +8,16 @@ import pinocchio as pin
 from env import BipedEnv
 import env
 from swingtraj import SwingTrajectory
+from torsotraj import TorsoYawTrajectory, Rz, yaw_from_R
 from alip_mpc import ALIP_MPC
-from wbc import WholeBodyController
+from wbc import WholeBodyController, WBCReference
 
 from debug_viz import DebugVisualizer
 from logger import Logger
 
 
-def Rz(psi):
-    '''Rotation about world z by psi.'''
-    c, s = np.cos(psi), np.sin(psi)
-    return np.array([[c, -s, 0.0],
-                     [s,  c, 0.0],
-                     [0.0, 0.0, 1.0]])
-
-
-def yaw_from_R(R):
-    '''Yaw (heading) of a rotation matrix.'''
-    return np.arctan2(R[1, 0], R[0, 0])
-
 class WalkingController:
-    def __init__(self, model, data, dt, mpc, wbc, swing_planner):
+    def __init__(self, model, data, dt, mpc, wbc, swing_planner, torso_yaw_planner):
         self.pin_model = model
         self.pin_data = data 
 
@@ -50,9 +39,11 @@ class WalkingController:
 
         self.mpc:ALIP_MPC = mpc
         self.swing_planner:SwingTrajectory = swing_planner
+        self.torso_yaw_planner:TorsoYawTrajectory = torso_yaw_planner
         self.wbc:WholeBodyController = wbc
 
-        self.cmd_vel = np.array([0.5, 0.0])  # [forward, lateral] command velocity, body (stance foot) frame
+        self.cmd_vel = np.array([0.0, 0.0])  # [forward, lateral] command velocity, body (stance foot) frame
+        self.cmd_yaw_rate = 0.4  # yaw rate command (rad/s)
 
         self.final_swing_target = None
         self.swing_target = None
@@ -139,7 +130,9 @@ class WalkingController:
             self.final_swing_target[2] = FOOT_OFFSET
 
             # self.final_swing_target = self.get_foot_pos(self.swing_foot) # Used for standing still
-            self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target) # (Initial Position , Final Position)
+            self.swing_planner.reset(self.get_foot_pos(self.swing_foot), self.final_swing_target,
+                                     self.get_foot_rot(self.swing_foot), self.cmd_yaw_rate) # (Initial Position , Final Position, Initial Rotation, Cmd Yaw Rate)
+            self.torso_yaw_planner.reset(self.pin_data.oMf[self.torso_id].rotation, self.cmd_yaw_rate) # (Initial Rotation, Cmd Yaw Rate)
 
         # --- mid-step re-solve (Gibson et al. Eq. 9) ---
         # Re-plan from the measured state, predicted to the end of the step, so model errors
@@ -151,13 +144,31 @@ class WalkingController:
 
         # --- per-tick swing target ---
         t_phase = self.phase_counter * self.dt
+
+        # Foot Position and Velocity Targets
         self.swing_target = self.swing_planner.get_target(t_phase)
         self.swing_vel_target = self.swing_planner.get_velocity(t_phase)
+
+        # Foot Rotation and Angular Velocity Targets
+        self.swing_foot_rot_target = self.swing_planner.get_rot_target(t_phase)
+        self.swing_foot_ang_vel_target = self.swing_planner.get_ang_velocity(t_phase)
+
+        # Torso Rotation and Angular Velocity Targets
+        self.torso_yaw_target = self.torso_yaw_planner.get_target(t_phase)
+        self.torso_yaw_vel_target = self.torso_yaw_planner.get_velocity(t_phase)
         # print("Swing Foot Target:", self.swing_target)
 
         # Caluclate tau, based on swing foot and swing target
         # --- WBC ---
-        tau = self.wbc.compute_control(q, dq, self.swing_target, self.swing_vel_target, self.stance_foot)
+        ref = WBCReference(
+            swing_pos=self.swing_target,
+            swing_vel=self.swing_vel_target,
+            swing_rot=self.swing_foot_rot_target,
+            swing_omega=self.swing_foot_ang_vel_target,
+            torso_rot=self.torso_yaw_target,
+            torso_omega=self.torso_yaw_vel_target,
+        )
+        tau = self.wbc.compute_control(q, dq, ref, self.stance_foot)
         tau = np.clip(tau, -ACTUATOR_LIMITS, ACTUATOR_LIMITS)
 
         self.phase_counter += 1
@@ -187,10 +198,13 @@ def run():
     T_s = STEP_DURATION
 
     mpc = ALIP_MPC(T_s, robot_mass, z_H, H=H, dt_control=dt)
-    swing = SwingTrajectory(clearance=STEP_HEIGHT)
+    # start the heading references at the robot's initial yaw
+    yaw0 = yaw_from_R(pin_data.oMf[pin_model.getFrameId(TORSO_NAME, pin.FrameType.BODY)].rotation)
+    swing = SwingTrajectory(clearance=STEP_HEIGHT, yaw_init=yaw0)
+    torso_yaw = TorsoYawTrajectory(yaw_init=yaw0)
     wbc = WholeBodyController(pin_model, pin_data, q_ref)
 
-    controller = WalkingController(pin_model, pin_data, dt, mpc, wbc, swing)
+    controller = WalkingController(pin_model, pin_data, dt, mpc, wbc, swing, torso_yaw)
 
     print("START:", controller.get_foot_pos(FOOT_NAMES[0]), controller.get_foot_pos(FOOT_NAMES[1]))
 
