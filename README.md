@@ -64,11 +64,12 @@ mjpython run.py     # mjpython needed for the passive viewer on macOS
    - Velocity tracking increased to 0.5 m/s
 
 SWITCHING to Unitree G1
-- Arms swinging out of control
-   - Solution: Add posture regularization for arm joints
+- ✅ ~~Arms swinging out of control~~
+   - Solution: Added posture regularization for arm joints  
+   - TODO: Need further constraints, without constraining the rest of the robot
 
-- Knees are overextending
-   - Add Joint Limits to WBC optimization formulation
+- ✅ ~~Knees are overextending~~
+   - Solution: Add Joint Limits to WBC optimization formulation
 
 ## TODO
 - Add mechanics to track angular velocity as well for heading control
