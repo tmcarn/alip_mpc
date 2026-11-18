@@ -85,9 +85,9 @@ class WholeBodyController:
         self.Kp_hand, self.Kd_hand = 400.0, 40.0
 
         # QP task weights
-        self.w_swing, self.w_torso, self.w_com, self.w_swing_rot, self.w_reg = 200.0, 1.0, 1.0, 1.0, 0.01
-        self.w_arm = 1.0         # arm posture hold
-        self.w_hand = 20.0       # keep well below w_swing; >> w_torso makes the torso lean to reach
+        self.w_swing, self.w_torso, self.w_com, self.w_swing_rot, self.w_reg = 200.0, 0.5, 2.0, 1.0, 0.01
+        self.w_arm = 0.5         # arm posture hold
+        self.w_hand = 1.0       # keep well below w_swing; >> w_torso makes the torso lean to reach
 
     def compute_jacobians(self, q, dq, stance_foot):
         '''Update the task Jacobians (and Jdot terms) stored on self for this tick.'''

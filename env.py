@@ -85,6 +85,31 @@ class BipedEnv:
         adr = self.mj_model.jnt_qposadr[self.mj_model.joint(joint_name).id]
         return int(np.where(self.robot_qpos_idx == adr)[0][0])
 
+    def get_hand_contact_forces(self, hand_geoms=None, box_geom="box_geom"):
+        '''
+        Measured contact force ON the robot from the box at each hand, world frame (summed over
+        all contacts between that hand's geom and the box). Zero vector when not touching.
+        Returns {hand: (3,)}.
+        '''
+        if hand_geoms is None:
+            hand_geoms = {"right_hand": "right_forearm_geom", "left_hand": "left_forearm_geom"}
+        box_id = self.mj_model.geom(box_geom).id
+        hand_ids = {h: self.mj_model.geom(g).id for h, g in hand_geoms.items()}
+
+        forces = {h: np.zeros(3) for h in hand_geoms}
+        f6 = np.zeros(6)
+        for i in range(self.mj_data.ncon):
+            c = self.mj_data.contact[i]
+            for h, gid in hand_ids.items():
+                if {c.geom1, c.geom2} != {gid, box_id}:
+                    continue
+                # f6[:3] is in the contact frame (row 0 = normal, from geom1 to geom2) and is the
+                # force geom1 exerts on geom2 (positive normal pushes them apart)
+                mujoco.mj_contactForce(self.mj_model, self.mj_data, i, f6)
+                f_world = c.frame.reshape(3, 3).T @ f6[:3]
+                forces[h] += f_world if c.geom2 == gid else -f_world  # force on the robot's geom
+        return forces
+
     def get_box_state(self):
         '''Box pose/velocity: pos (3,), quat wxyz (4,), linear vel (3,), angular vel (3,).'''
         qb = self.mj_data.qpos[self.box_qpos_idx]

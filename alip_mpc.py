@@ -37,6 +37,24 @@ def make_gamma(Ad, B, H):
             gamma[4*i:4*(i+1), 2*j:2*(j+1)] = np.linalg.matrix_power(Ad, i-j) @ B
     return gamma
 
+def make_E():
+    '''External torque (tau_x, tau_y about the stance foot) enters the angular momentum rows only.'''
+    E = np.zeros((4, 2))
+    E[2, 0] = 1.0
+    E[3, 1] = 1.0
+    return E
+
+def make_force_input(A, E, t):
+    '''
+    Gamma_t = int_0^t exp(A s) ds @ E (4x2): state change over t seconds from a constant external
+    torque, so x(t) = exp(A t) x(0) + Gamma_t tau. Computed with the augmented matrix exponential
+    (no inverse of A needed).
+    '''
+    M = np.zeros((6, 6))
+    M[:4, :4] = A
+    M[:4, 4:] = E
+    return scipy.linalg.expm(M * t)[:4, 4:]
+
 def make_Q(H, q_L):
     Q_block = np.diag([2.1, 2.1, q_L, q_L])
     return np.kron(np.eye(H), Q_block)
@@ -57,7 +75,7 @@ class ALIP_MPC:
         self.z_H = Z_H  # CoM height above ground
         self.W = STEP_WIDTH
 
-        print(f"ALIP parameters: z_H={self.z_H:.2f} m")
+        # print(f"ALIP parameters: z_H={self.z_H:.2f} m")
         
         self.H = H
         self.T_s = T_s
@@ -69,6 +87,24 @@ class ALIP_MPC:
         self.phi = make_phi(self.Ad, H)
         self.gamma = make_gamma(self.Ad, self.B, H)
         self.Q = make_Q(H, q_L=1.0)
+
+        # External (hand) torque about the stance foot: x+ = Ad x + B u + d_F, d_F = Gamma_T tau
+        self.E = make_E()
+        self.Gamma_T = make_force_input(self.A, self.E, T_s)
+        self.Ad_inv = np.linalg.inv(self.Ad)
+
+    def force_offset(self, tau_ext):
+        '''
+        Stacked state offset over the horizon from a constant external torque (stance frame).
+        Row block i (state after i+1 steps) = sum_{k=0..i} Ad^(i-k) d_F, d_F = Gamma_T tau.
+        '''
+        d_F = self.Gamma_T @ tau_ext
+        D = np.zeros(4 * self.H)
+        acc = np.zeros(4)
+        for i in range(self.H):
+            acc = self.Ad @ acc + d_F
+            D[4*i:4*(i+1)] = acc
+        return D
         
 
     def get_bounds(self, stance_foot, u_lim=0.8, step_width_min=0.15): 
@@ -97,7 +133,7 @@ class ALIP_MPC:
         return yc_des, Lx_des
 
 
-    def make_X_ref(self, cmd_vel, stance_foot, verbose=True):
+    def make_X_ref(self, cmd_vel, stance_foot, verbose=False, tau_ext=None):
         '''
         Build the MPC reference over horizon H.
         State per step: [xc, yc, Lx, Ly].
@@ -117,12 +153,21 @@ class ALIP_MPC:
 
         Lx_offset = -self.m * self.z_H * cmd_vel[1] # Offset for lateral motion
 
+        # Constant external torque shifts the whole periodic orbit in CoM position:
+        # Ly_dot = m g xc + tau_y, Lx_dot = -m g yc + tau_x  ->  the unforced ALIP holds in
+        # xc + tau_y/(m g) and yc - tau_x/(m g), so the orbit moves by (-tau_y, +tau_x)/(m g)
+        # (forward push: lean into the box)
+        dxc, dyc = 0.0, 0.0
+        if tau_ext is not None:
+            dxc = -tau_ext[1] / (self.m * self.g)
+            dyc = tau_ext[0] / (self.m * self.g)
+
         X_ref = np.zeros((4 * self.H,))
         for i in range(self.H):
             sigma = sigma0 * ((-1.0) ** i)      # flip each step across horizon
             yc_des, Lx_des = self.lateral_orbit_closed_form(sigma)
-            X_ref[4 * i + 0] = xc_des
-            X_ref[4 * i + 1] = yc_des
+            X_ref[4 * i + 0] = xc_des + dxc
+            X_ref[4 * i + 1] = yc_des + dyc
             X_ref[4 * i + 2] = Lx_des + Lx_offset
             X_ref[4 * i + 3] = Ly_des
 
@@ -143,19 +188,29 @@ class ALIP_MPC:
         x_plus = x_minus + (self.B @ u)
         return x_plus
 
-    def solve_mpc(self, x0, cmd_vel, stance_foot, t_elapsed=0.0, r_reg=1e-4, verbose=True):
+    def solve_mpc(self, x0, cmd_vel, stance_foot, t_elapsed=0.0, r_reg=1e-4, verbose=False, tau_ext=None):
         '''
         x0:        measured ALIP state t_elapsed seconds into the current step (stance foot frame)
         t_elapsed: time since the last impact. phi assumes a full T_s before the first impact,
                    so x0 is back-propagated to the start of the step; phi @ x0 then equals the
                    paper's Eq. 9 prediction exp(A(T_s - t)) x(t). t_elapsed = 0 -> unchanged.
+        tau_ext:   (2,) planned external torque [tau_x, tau_y] about the stance foot, stance frame
+                   (e.g. from the hand push forces), held constant over the horizon. None -> 0.
         '''
         t_elapsed = float(np.clip(t_elapsed, 0.0, self.T_s))  # past T_s: impact is "now"
-        if t_elapsed > 0.0:
-            x0 = scipy.linalg.expm(-self.A * t_elapsed) @ x0
+        tau = np.zeros(2) if tau_ext is None else np.asarray(tau_ext, dtype=float)
 
-        X_ref = self.make_X_ref(cmd_vel, stance_foot, verbose)
-        b = self.phi @ x0 - X_ref
+        if t_elapsed > 0.0:
+            # With the force, the end-of-step prediction is exp(A(T-t)) x(t) + Gamma_{T-t} tau.
+            # The first horizon block computes Ad x0' + Gamma_T tau, so pick the equivalent x0':
+            #   x0' = exp(-A t) x(t) + Ad^-1 (Gamma_{T-t} - Gamma_T) tau
+            x0 = scipy.linalg.expm(-self.A * t_elapsed) @ x0
+            if np.any(tau):
+                Gamma_rem = make_force_input(self.A, self.E, self.T_s - t_elapsed)
+                x0 = x0 + self.Ad_inv @ (Gamma_rem - self.Gamma_T) @ tau
+
+        X_ref = self.make_X_ref(cmd_vel, stance_foot, verbose, tau_ext=tau if np.any(tau) else None)
+        b = self.phi @ x0 + self.force_offset(tau) - X_ref
         # Small input regularization. Q only penalizes (Lx, Ly), so the final
         # footstep in the horizon (which affects only the unpenalized terminal
         # CoM position) leaves P rank-deficient; the ridge makes P PD.
@@ -200,8 +255,8 @@ class ALIP_MPC:
 
         for i in range(steps):
             u = self.solve_mpc(x, cmd_vel, stance_foot)
-            print(f'PRE-STEP X = {x}')
-            print(f"NEXT FOOTSTEP = {u}")
+            # print(f'PRE-STEP X = {x}')
+            # print(f"NEXT FOOTSTEP = {u}")
             # print(f"Step {i}: x={x} --> footstep = {u}")
             
             # record pre-transition CoM in world frame
@@ -210,8 +265,8 @@ class ALIP_MPC:
             # apply step transition
             x = self.step_transition(x, u)
             # x = self.impact_map(x,u)
-            print(f'POST-STEP X = {x}')
-            print()
+            # print(f'POST-STEP X = {x}')
+            # print()
             foot_traj.append(curr_world_u + u)
             curr_world_u += u
             
