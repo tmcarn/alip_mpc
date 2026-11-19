@@ -293,6 +293,7 @@ class WholeBodyController:
 
         qdd = x[:nv]
         lambda_contact = x[nv:]
+        self.lambda_contact = lambda_contact  # planned stance foot wrench (kept for logging)
 
         # print("lambda_contact:", lambda_contact)
 

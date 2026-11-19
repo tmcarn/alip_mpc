@@ -9,6 +9,12 @@
         <light name="sun" directional="true" dir="-1 -1 -2" castshadow="true"
             diffuse="1.2 1.2 1.2" specular="0.3 0.3 0.3" ambient="0.3 0.3 0.3"/>
         <geom name="floor" type="plane" size="50 50 0.1" rgba="0.3 0.3 0.3 1"/>
+
+        <!-- Fixed world cameras, centered at x = 1.3 (between the robot start and the box goal). -->
+        <!-- sagittal: from the -y side looking along +y (image: x right, z up) -->
+        <camera name="sagittal" pos="1.3 -7 1.0" xyaxes="1 0 0 0 0 1" fovy="45"/>
+        <!-- top down: straight down (image: x right, y up) -->
+        <camera name="top_down" pos="1.3 0 10" xyaxes="1 0 0 0 1 0" fovy="45"/>
     </worldbody>
 
 </mujoco>

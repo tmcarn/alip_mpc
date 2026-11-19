@@ -110,6 +110,28 @@ class BipedEnv:
                 forces[h] += f_world if c.geom2 == gid else -f_world  # force on the robot's geom
         return forces
 
+    def get_foot_contact_forces(self, foot_geoms=None, floor_geom="floor"):
+        '''
+        Measured ground reaction force ON each foot, world frame (summed over all contacts between
+        that foot's geom and the floor). Zero vector in swing. Returns {foot: (3,)}.
+        '''
+        if foot_geoms is None:
+            foot_geoms = {"right_foot": "right_foot_geom", "left_foot": "left_foot_geom"}
+        floor_id = self.mj_model.geom(floor_geom).id
+        foot_ids = {f: self.mj_model.geom(g).id for f, g in foot_geoms.items()}
+
+        forces = {f: np.zeros(3) for f in foot_geoms}
+        f6 = np.zeros(6)
+        for i in range(self.mj_data.ncon):
+            c = self.mj_data.contact[i]
+            for f, gid in foot_ids.items():
+                if {c.geom1, c.geom2} != {gid, floor_id}:
+                    continue
+                mujoco.mj_contactForce(self.mj_model, self.mj_data, i, f6)
+                f_world = c.frame.reshape(3, 3).T @ f6[:3]
+                forces[f] += f_world if c.geom2 == gid else -f_world  # force on the foot
+        return forces
+
     def get_box_state(self):
         '''Box pose/velocity: pos (3,), quat wxyz (4,), linear vel (3,), angular vel (3,).'''
         qb = self.mj_data.qpos[self.box_qpos_idx]
@@ -127,7 +149,66 @@ class BipedEnv:
         if self.viewer is not None and self.viewer.is_running():
             self.viewer.sync()
 
+    # --- offscreen video recording from named MJCF cameras ---
+    def start_recording(self, cameras=("sagittal", "top_down"), path_prefix="logs/run",
+                        fps=30, width=1280, height=720):
+        '''
+        Record each camera to <path_prefix>_<camera>.mp4 (one file per camera), at `fps` in SIM time,
+        so the video lines up with the logged data. Call record_frame() every sim step and
+        stop_recording() at the end. Size must fit <visual><global offwidth/offheight> (1980x1080).
+        '''
+        import os
+        import imageio
+        os.makedirs(os.path.dirname(path_prefix) or ".", exist_ok=True)
+        self._renderer = mujoco.Renderer(self.mj_model, height, width)
+        self._rec_cams = {c: self.mj_model.camera(c).id for c in cameras}
+        self._writers = {c: imageio.get_writer(f"{path_prefix}_{c}.mp4", fps=fps, macro_block_size=1)
+                         for c in cameras}
+        self._rec_paths = [f"{path_prefix}_{c}.mp4" for c in cameras]
+        self._frame_dt = 1.0 / fps
+        self._next_frame_t = self.mj_data.time
+
+    def record_frame(self):
+        '''Grab a frame from every recording camera if it's time for the next one (cheap otherwise).'''
+        if getattr(self, "_writers", None) is None:
+            return
+        if self.mj_data.time < self._next_frame_t - 2 * self._frame_dt:   # sim was reset: resync the clock
+            self._next_frame_t = self.mj_data.time
+        if self.mj_data.time + 1e-9 < self._next_frame_t:
+            return
+        self._next_frame_t += self._frame_dt
+        for c, cam_id in self._rec_cams.items():
+            self._renderer.update_scene(self.mj_data, camera=cam_id)
+            if self.viewer is not None:   # debug markers (footstep plan, CoM, frames) live in the viewer's
+                self._copy_user_geoms(self.viewer.user_scn, self._renderer.scene)  # scene only
+            self._writers[c].append_data(self._renderer.render())
+
+    @staticmethod
+    def _copy_user_geoms(src, dst):
+        '''Append the debug geoms of one MjvScene (e.g. viewer.user_scn) to another.'''
+        for i in range(src.ngeom):
+            if dst.ngeom >= dst.maxgeom:
+                break
+            s = src.geoms[i]
+            g = dst.geoms[dst.ngeom]
+            mujoco.mjv_initGeom(g, s.type,   # scene stores float32, initGeom wants float64
+                                s.size.astype(np.float64), s.pos.astype(np.float64),
+                                s.mat.astype(np.float64).ravel(), s.rgba.astype(np.float32))
+            g.size[:] = s.size   # initGeom reinterprets capsule sizes ([r, r, half_len] -> [r, r, r]): restore
+            dst.ngeom += 1
+
+    def stop_recording(self):
+        '''Finish and close the video files. Safe to call when not recording.'''
+        if getattr(self, "_writers", None) is None:
+            return
+        for w in self._writers.values():
+            w.close()
+        self._renderer.close()
+        self._writers = None
+        print("saved videos:", ", ".join(self._rec_paths))
+
     def close(self):
+        self.stop_recording()
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None

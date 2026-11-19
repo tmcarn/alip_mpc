@@ -305,57 +305,111 @@ def run():
     viz = DebugVisualizer(env.viewer)
 
     logger = Logger()
+    LOG_PATH = "logs/run.npz"   # plot with: python plot_log.py logs/run.npz
+    LOG_EVERY = 10              # log every N ticks (10 ms)
 
-    
-    for i in range(200000):
-        q, dq = env.get_joint_state()
-        pin.computeAllTerms(pin_model, pin_data, q, dq)
-        pin.updateFramePlacements(pin_model, pin_data)
-        update_box_state()
+    # Box goal, only used to log the tracking error (nothing tracks it yet)
+    BOX_GOAL_XY = box_pos[:2] + np.array([1.5, 0.0])
+    BOX_GOAL_YAW = 0.0
+    BOX_V_DES = 0.0             # desired box speed along the push (m/s), for the velocity error
 
-        # measured contact force: only used to track the planned push force (not for planning)
-        f_hand = env.get_hand_contact_forces()  # force ON the robot, world frame
-        controller.update_push_force(f_hand)
+    RECORD = True               # save logs/run_sagittal.mp4 and logs/run_top_down.mp4 (sim-time 30 fps)
+    if RECORD:
+        env.start_recording(cameras=("sagittal", "top_down"), path_prefix=LOG_PATH[:-4], fps=30)
 
-        tau = controller.compute_action(q, dq)
-        env.step(tau)
+    try:
+        for i in range(200000):
+            q, dq = env.get_joint_state()
+            pin.computeAllTerms(pin_model, pin_data, q, dq)
+            pin.updateFramePlacements(pin_model, pin_data)
+            update_box_state()
 
-        # --- push force tracking: planned vs measured normal force per hand ---
-        if i % int(0.1 / dt) == 0:
-            box_pos, _, box_vel, _ = env.get_box_state()
-            p = controller.push
-            # gap from each hand site to the box surface along the outward normal (> 0: not touching)
-            n_w = controller.hand_normals_world()
-            hand_ref = controller.get_hand_reference()
-            gap, miss = {}, {}
-            for i_h, h in enumerate(HANDS):
-                p_hand = pin_data.oMf[wbc.right_hand_id if h == "right_hand" else wbc.left_hand_id].translation
-                c_w = box_pos + controller.box_R @ controller.hand_contacts_obj[i_h]  # contact point on the face
-                gap[h] = float((p_hand - c_w) @ n_w[h])
-                miss[h] = float(np.linalg.norm(hand_ref[h][0] - p_hand))            # distance to target
-            torso_x = pin_data.oMf[controller.torso_id].translation[0]
-            print(f"t={i*dt:5.2f}  F_des/hand={p.F_des_hand:4.1f} N"
-                  f"  Fn r/l={p.F_n_meas['right_hand']:5.1f}/{p.F_n_meas['left_hand']:5.1f} N"
-                  f"  depth r/l={p.depth['right_hand']*100:4.1f}/{p.depth['left_hand']*100:4.1f} cm"
-                  f"  gap r/l={gap['right_hand']*100:+5.1f}/{gap['left_hand']*100:+5.1f} cm"
-                  f"  target miss r/l={miss['right_hand']*100:4.1f}/{miss['left_hand']*100:4.1f} cm"
-                  f"  torso x={torso_x:.3f}  box x={box_pos[0]:.3f} vx={box_vel[0]:+.3f}"
-                  f"  engaged r/l={int(p.engaged['right_hand'])}/{int(p.engaged['left_hand'])}")
+            # measured contact force: only used to track the planned push force (not for planning)
+            f_hand = env.get_hand_contact_forces()  # force ON the robot, world frame
+            controller.update_push_force(f_hand)
 
-        viz.draw(
-            env.mj_data,
-            None,                 # {"right_foot": id, "left_foot": id}
-            swing_target=None, # yellow sphere (the current swing foot tracking target)
-            footstep_plan=controller.final_swing_target, # magenta sphere (the MPC landing spot)
-            com=controller.com_pos,
-            torso_body_id=env.torso,
-            draw_world=True
-        )
+            tau = controller.compute_action(q, dq)
+            env.step(tau)
+            env.record_frame()   # no-op unless recording and a frame is due
 
-        env.render()
-        time.sleep(dt*1)
+            # --- data log (forces on the robot, world frame) ---
+            if i % LOG_EVERY == 0:
+                f_foot = env.get_foot_contact_forces()
+                f_plan = controller.get_planned_hand_forces()
+                n_w = controller.hand_normals_world()
+                b_pos, b_R = controller.box_pos, controller.box_R
+                b_yaw = yaw_from_R(b_R)
+                pos_err = BOX_GOAL_XY - b_pos[:2]
+                yaw_err = np.arctan2(np.sin(BOX_GOAL_YAW - b_yaw), np.cos(BOX_GOAL_YAW - b_yaw))
+                push_dir_w = -n_w["right_hand"][:2]        # into the face = push direction
+                v_along = float(controller.box_vel[:2] @ push_dir_w)
+                lam = getattr(wbc, "lambda_contact", np.full(3, np.nan))
+                logger.log(
+                    i * dt,
+                    foot_force_right=f_foot["right_foot"],
+                    foot_force_left=f_foot["left_foot"],
+                    stance_is_left=float(controller.stance_foot == "left_foot"),
+                    wbc_stance_force=lam[:3],               # planned stance force from the WBC QP
+                    hand_force_right=f_hand["right_hand"],  # measured
+                    hand_force_left=f_hand["left_hand"],
+                    hand_fn_right=float(f_hand["right_hand"] @ n_w["right_hand"]),  # normal (push) part
+                    hand_fn_left=float(f_hand["left_hand"] @ n_w["left_hand"]),
+                    hand_fn_planned_right=controller.push.F_des_hand if f_plan["right_hand"] is not None else 0.0,
+                    hand_fn_planned_left=controller.push.F_des_hand if f_plan["left_hand"] is not None else 0.0,
+                    box_pos=b_pos.copy(),
+                    box_yaw=b_yaw,
+                    box_vel=controller.box_vel.copy(),
+                    box_omega=controller.box_omega.copy(),
+                    box_pos_err=pos_err,                    # goal - box, world xy
+                    box_pos_err_norm=float(np.linalg.norm(pos_err)),
+                    box_yaw_err=yaw_err,
+                    box_vel_err=BOX_V_DES - v_along,
+                )
 
-    env.close()
+            # --- push force tracking: planned vs measured normal force per hand ---
+            if i % int(0.1 / dt) == 0:
+                box_pos, _, box_vel, _ = env.get_box_state()
+                p = controller.push
+                # gap from each hand site to the box surface along the outward normal (> 0: not touching)
+                n_w = controller.hand_normals_world()
+                hand_ref = controller.get_hand_reference()
+                gap, miss = {}, {}
+                for i_h, h in enumerate(HANDS):
+                    p_hand = pin_data.oMf[wbc.right_hand_id if h == "right_hand" else wbc.left_hand_id].translation
+                    c_w = box_pos + controller.box_R @ controller.hand_contacts_obj[i_h]  # contact point on the face
+                    gap[h] = float((p_hand - c_w) @ n_w[h])
+                    miss[h] = float(np.linalg.norm(hand_ref[h][0] - p_hand))            # distance to target
+                torso_x = pin_data.oMf[controller.torso_id].translation[0]
+                print(f"t={i*dt:5.2f}  F_des/hand={p.F_des_hand:4.1f} N"
+                      f"  Fn r/l={p.F_n_meas['right_hand']:5.1f}/{p.F_n_meas['left_hand']:5.1f} N"
+                      f"  depth r/l={p.depth['right_hand']*100:4.1f}/{p.depth['left_hand']*100:4.1f} cm"
+                      f"  gap r/l={gap['right_hand']*100:+5.1f}/{gap['left_hand']*100:+5.1f} cm"
+                      f"  target miss r/l={miss['right_hand']*100:4.1f}/{miss['left_hand']*100:4.1f} cm"
+                      f"  torso x={torso_x:.3f}  box x={box_pos[0]:.3f} vx={box_vel[0]:+.3f}"
+                      f"  engaged r/l={int(p.engaged['right_hand'])}/{int(p.engaged['left_hand'])}")
+
+            viz.draw(
+                env.mj_data,
+                None,                 # {"right_foot": id, "left_foot": id}
+                swing_target=None, # yellow sphere (the current swing foot tracking target)
+                footstep_plan=controller.final_swing_target, # magenta sphere (the MPC landing spot)
+                com=controller.com_pos,
+                torso_body_id=env.torso,
+                draw_world=True
+            )
+
+            if not env.viewer.is_running():   # closing the viewer ends the run (and saves the log)
+                break
+            env.render()
+            time.sleep(dt*1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        import os
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        logger.save(LOG_PATH)
+        print(f"saved log to {LOG_PATH}")
+        env.close()
 
 
 

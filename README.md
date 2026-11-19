@@ -1,133 +1,240 @@
-# ALIP-MPC Bipedal Walker
+# ALIP-MPC Humanoid: Walking and Box Pushing
 
-A from-scratch ALIP-based MPC footstep planner with whole-body control (WBC)
-for a 3D 5-DOF-per-leg biped, simulated in MuJoCo.
+A walking controller for a simulated humanoid (MuJoCo), built from scratch.
+The robot can walk in any direction, turn, and push a box with both hands.
 
 ![Walking Demo](media/ALIP_MPC.gif)
 
-## Overview
+## How it works (big picture)
 
-The control stack has three layers:
+Every control tick (1 ms) the controller does three things:
 
-1. **ALIP-MPC** (`alip_mpc.py`) — Angular Momentum Linear Inverted Pendulum
-   model predictive control. Plans footstep locations over a horizon by
-   tracking a desired angular-momentum periodic orbit, solved as a QP.
-2. **Swing trajectory** (`swingtraj.py`) — generates the swing-foot reference
-   path (linear in xy, sinusoidal lift in z) between footstep targets.
-3. **Whole-body control** (`wbc.py`) — solves for joint accelerations and
-   contact forces via QP subject to the floating-base dynamics and a stance
-   contact constraint, then recovers joint torques by inverse dynamics.
+1. **Decide where to step.** The *ALIP-MPC* models the robot as an inverted pendulum
+   and picks the next footstep so the robot keeps its balance and walks at the commanded speed.
+2. **Make smooth paths.** The *trajectory generators* turn that footstep into a smooth
+   path for the swing foot, and turn the yaw command into a smooth heading for the torso and feet.
+3. **Turn goals into motor torques.** The *whole-body controller (WBC)* solves a small
+   optimization that tracks all the goals at once (swing foot, torso, CoM height, hands)
+   while respecting physics, foot friction and motor limits.
 
-A time-based finite-state machine (`run.py`) switches stance every `T_s`
-seconds and ties the three layers together.
+`run.py` ties these together and switches the stance foot after every step.
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `alip_mpc.py`  | ALIP model + MPC QP footstep planner |
-| `wbc.py`       | Whole-body controller (QP inverse dynamics) |
-| `swingtraj.py` | Swing-foot trajectory generator |
-| `env.py`       | MuJoCo environment wrapper |
-| `debug_viz.py` | Viewer debug geoms (foot frames, swing target, plan) |
-| `constants.py` | Shared parameters |
-| `run.py`       | Integrated walking loop |
-| `xml_files/`   | MuJoCo MJCF model |
+| File | What it does |
+|------|--------------|
+| `run.py`       | Main loop: reads the sim, runs the controllers, steps the sim |
+| `alip_mpc.py`  | Footstep planner (ALIP model + MPC) |
+| `swingtraj.py` | Swing foot path (position and yaw) |
+| `torsotraj.py` | Torso heading (yaw) path for turning |
+| `wbc.py`       | Whole-body controller: goals → joint torques |
+| `intention.py` | Box geometry and where the hands should touch the box |
+| `push.py`      | Push force planning and hand force tracking |
+| `env.py`       | MuJoCo wrapper (robot state, box state, hand contact forces) |
+| `constants.py` | Shared settings (step time, CoM height, box estimates, ...) |
+| `debug_viz.py` | Debug markers in the viewer |
+| `xml_files/`   | Robot, box and scene models |
 
-## Setup
+## Setup and run
 
 ```bash
 pip install -r requirements.txt
+mjpython run.py     # mjpython is needed for the viewer on macOS
 ```
 
-## Run
+Change the walking command in `run.py` (`cmd_lin_vel` = forward/sideways speed,
+`cmd_yaw_rate` = turning speed).
 
-```bash
-mjpython run.py     # mjpython needed for the passive viewer on macOS
+## Walking
+
+### The ALIP model
+The robot is treated as a point mass at constant height `z_H` balancing on the stance foot.
+The state is the CoM position relative to the stance foot and the angular momentum about the foot:
+
+```
+x = [x_c, y_c, L_x, L_y]
+
+ẋ_c =  L_y / (m z_H)        L̇_y =  m g x_c
+ẏ_c = −L_x / (m z_H)        L̇_x = −m g y_c
 ```
 
-## Issues
-- ✅ ~~WBC is not correctly tracking the stepping trajectory, it lags behind~~
-   - Solution: separate PD gains for each task of the WBC
-- ✅ ~~Footstep locations become out of control~~
-   - Solution: MPC State Transitions were incorrect, teleporting foot to new position first, before doing intrastep dynamics. As a result, foot was directed to go where it needed to instantly be, not where it should be by the time it gets there. 
-- ✅ ~~First Step is Unstable~~
-   - Solution: Added friction cone constraint to WBC
-- ✅ ~~Position drifts when commanded velocity is zero~~
-   - Solutions: 
-      - PD controller velocity was set to zero, set vel tracking to target velocity from the swing trajectory generator
-      - Height Based Contact Detection Added
-- ✅ ~~Velocity tracking breaks down at about 0.1 m/s for lateral walking and 0.3 m/s for forwards walking~~
-   - Solution: Reduced nominal center of mass height (z_H) from 1.3m to 1.2m
-   - Velocity tracking increased to 0.5 m/s
-- ✅ ~~Feet are turning to track commanded angular velocity but foot placements are poor~~
-   - Issue: MPC assumes linear trajectory, and since it only planned once per footstep, plans were always out of date
-   - Solution: Include intra-step dynamics, to continously replan mid-step
-- ✅ ~~Robot turns correctly but maintains command velocity in the world frame not the local frame~~
-   - Solution: pass in local frame velocity into MPC, not global frame
+Over one step of length `T_s` this becomes `x_end = A_d x_start` with `A_d = exp(A T_s)`.
+When the foot lands at offset `u = [u_x, u_y]` from the old stance foot, the CoM position is
+re-measured from the new foot:
+
+```
+x⁺ = x⁻ + B u,   B = [−I; 0]       (L is unchanged at impact)
+```
+
+### Footstep MPC
+Plan `H = 4` steps ahead, use only the first one:
+
+```
+min_U  Σ_k ‖x_k − x_ref,k‖²_Q + r ‖U‖²      x_{k+1} = A_d x_k + B u_k
+s.t.   step bounds (min step width, max reach)
+```
+
+The reference `x_ref` is the periodic walking orbit for the commanded speed:
+- forward: `L_y,des = m z_H v_x`
+- sideways sway: `y_c,des = ±W/2`, `L_x,des = ±½ m z_H ℓ W tanh(ℓ T_s/2)` with `ℓ = √(g/z_H)`, sign flips every step
+- sideways walking: an offset `−m z_H v_y` on `L_x`
+
+### Replanning mid-step
+The MPC re-solves every 4 ms during the step (stopping at 85% of the step), so mistakes are
+corrected before the foot lands. The measured state at time `t` is predicted to the end of the step:
+
+```
+x(T_s) = exp(A (T_s − t)) x(t)
+```
+
+### Robot's own frame
+The MPC works in the stance foot's frame (x = forward, y = left), so "walk forward" means forward
+for the robot, not for the world. With `R` the stance foot's yaw rotation:
+
+```
+in:   [x_c, y_c] = Rᵀ r,   [L_x, L_y] = Rᵀ L
+out:  u_world = R u
+```
+
+### Turning
+Each step the heading advances by `Δψ = ψ̇_cmd T_s`.
+- **Torso:** ends each step halfway to the new heading, `ψ_torso → ψ_stance + ½ Δψ` (linear ramp).
+- **Swing foot:** lands at the new heading, `ψ_foot → ψ_prev + Δψ` (cosine blend, so it lands with zero yaw speed).
+
+### Whole-body controller
+Solves for joint accelerations `q̈` and the stance foot force `λ`:
+
+```
+min   Σ_tasks w_i ‖J_i q̈ + J̇_i q̇ − a_i,des‖²       a_des = Kp (target − actual) + Kd (v_target − v)
+s.t.  floating-base dynamics:   M q̈ + h = Sᵀτ + J_stᵀ λ + J_handᵀ f_hand
+      stance foot doesn't move:  J_st q̈ + J̇_st q̇ = 0
+      friction pyramid on λ, torque limits on τ
+```
+
+Tasks: swing foot position and orientation, torso orientation, CoM height, hand positions,
+arm posture. The torques are then `τ = M q̈ + h − J_stᵀ λ − J_handᵀ f_hand`.
+
+## Box pushing
+
+### What works now
+1. **Hand targets on the box.** Both hands are placed on the box face opposite the push
+   direction, at the same height, centered so a straight push does not spin the box.
+   The targets are stored in the box's frame (`c_h`, normal `n_h`), so they move and turn with the box:
+   ```
+   p_hand,des = p_box + R_box (c_h − depth · n_h)
+   v_hand,des = v_box + ω_box × (p_hand,des − p_box)
+   ```
+2. **Planned push force.** The force needed to slide the box, using our *estimates* of the box
+   (`BOX_MASS_EST`, `BOX_MU_EST` in `constants.py`). This one planned number is used everywhere
+   below, instead of a noisy measurement:
+   ```
+   F_des = μ m_box g + m_box a_des        (split equally: F_des/2 per hand)
+   ```
+3. **Hands apply that force.** The hands are position controlled, so to push harder they aim
+   slightly *inside* the box face. A small PI loop adjusts how deep, until the measured normal
+   force matches the planned one:
+   ```
+   e = F_planned − F_measured
+   depth = F_planned / K_est + k_p e + ∫ k_i e dt        (clamped to 0–6 cm)
+   ```
+   The measured force is only used for this check and to detect contact (a hand "engages" once
+   it feels half its planned force, and releases after 0.3 s without force).
+4. **WBC knows about the push.** The force on the robot from the box, `f_hand = +n · F_planned`,
+   is added to the dynamics (see the WBC equations above), so the WBC isn't surprised by the box
+   pushing back.
+5. **MPC knows about the push.** The push creates a torque about the stance foot:
+   ```
+   τ = Σ_h (c_h − p_stance) × f_h       (only the x, y parts, in the stance frame)
+   ```
+   It enters the angular momentum equations, so each step gets a constant extra term:
+   ```
+   ẋ = A x + E τ        →     x⁺ = A_d x + B u + d_F,    d_F = ∫₀^{T_s} e^{As} ds · E τ
+   ```
+   It also shifts the walking orbit, so the robot leans into the box:
+   ```
+   Δx_c = −τ_y / (m g),   Δy_c = τ_x / (m g)        (forward push of force F at height h: Δx_c = h F / (m g))
+   ```
+
+### Next: box pose controller (to do)
+Goal: push the box to a target position **and** heading, and make the robot walk along with it.
+
+The hands can only push *into* the face, so they can make two things:
+- a **forward force** (both hands push), and
+- a **turning force** (one hand pushes harder than the other).
+
+They can't push the box sideways. So the box is steered like a car:
+
+1. **Steer.** Far from the goal, turn the box so its pushing direction `d` points at the goal.
+   Close to the goal, switch to turning it to the goal heading:
+   ```
+   e_steer = angle(d) − angle(p_goal − p_box)
+   e_goal  = ψ_box − ψ_goal
+   e_ψ     = b e_steer + (1 − b) e_goal,     b = clip(distance / r_blend, 0, 1)
+   ```
+2. **Spring-damper on the box.** Pretend the box is attached to its goal by a spring and
+   damper. This gives the force and turning effect the box needs. Limit the box speed
+   (e.g. 0.15 m/s) and acceleration so it starts and stops smoothly:
+   ```
+   v_des = clip(K_v · (distance to go along d), 0, v_max)       (can only push: never negative)
+   F     = μ m g + m a_des + D_v (v_des − v)
+   M_z   = −K_ψ e_ψ − D_ψ ω_z
+   ```
+3. **Split between the hands.** Choose how hard each hand pushes so the total matches the
+   forward force and the turning effect, while each hand keeps a small minimum force so it
+   stays on the box. With `m_h = [(c_h − p_box) × d_h]_z` the turning effect per newton of hand `h`:
+   ```
+   f_r + f_l = F
+   m_r f_r + m_l f_l = M_z
+   f_min ≤ f_h ≤ f_max        (solve as a tiny QP when a limit is hit)
+   ```
+4. **Robot follows the box.** Keep the torso a fixed distance behind the hands, facing the box.
+   The walking command is the speed of the hands plus a correction, turned into the robot's frame:
+   ```
+   p_torso,des = c_mid + standoff · n_face
+   cmd_lin_vel = R_torsoᵀ [ v_contact + K_p (p_torso,des − p_torso) ]
+   cmd_yaw_rate = ω_box + K_ψ,base (ψ_face − ψ_torso)
+   ```
+5. **Send the results on.** The hand forces go to the hand force loop, the WBC and the MPC.
+   The walking commands go to the MPC and the heading planners.
+
+Test in this order: straight push → goal off to the side (steering) → change of final heading.
+
+A first draft (`BoxPoseController` in `push.py`) exists but does not work yet.
+
+Things to keep in mind:
+- The hands must be able to reach: shoulders are at about 1.8 m high and the arm is 0.84 m
+  long, so push at about 1.35 m.
+- The box slides before it tips if `μ h < half width` (`h` = push height).
+- A big final heading change can't be done from one face. That needs moving the hands to
+  another face (the high-level planner's job, below).
+
+### Later: high-level planner
+Follow *Where to Touch, How to Contact* (Xie et al.): a learned policy picks **where to
+touch** the box and **where the box should go next**; the box pose controller above carries
+it out. `intention.py` already has the interface (`ContactIntention`) and a simple
+hand-written placeholder (`HeuristicIntentionPlanner`). The paper's success test:
+position error < 5 cm and rotation distance `1 − ⟨q_box, q_goal⟩² < 0.03`.
+
+## Issues solved
+- ✅ ~~WBC lagged behind the stepping trajectory~~ → separate gains for each WBC task
+- ✅ ~~Footsteps went out of control~~ → the MPC applied the step before the in-step motion; fixed the order (move first, then step)
+- ✅ ~~First step unstable~~ → added a foot friction limit to the WBC
+- ✅ ~~Position drifted at zero speed~~ → track the swing foot's target velocity; detect touchdown by foot height
+- ✅ ~~Walking speed limited to ~0.1–0.3 m/s~~ → lowered the CoM height (now up to 0.5 m/s)
+- ✅ ~~Poor foot placement while turning~~ → replan mid-step
+- ✅ ~~Robot walked in world directions instead of its own~~ → MuJoCo stores the base's linear
+  velocity in the world frame, Pinocchio expects the base frame; it is now rotated: `v_base = R_baseᵀ v_world`
 
 ## TODO
-- Switch height based contact detection to joint torque based (invariant to unlevel terrain)
+- Box pose controller (above)
+- Detect touchdown from joint torques instead of foot height (works on uneven ground)
 
-## Loco-Manipulation: Box Pushing (planned)
-Given a contact position on the box and a target box pose, push the box there. Approach phase is assumed complete for now (robot starts at the pre-push pose).
-
-### Push geometry
-- Push direction: `d = (p_target - p_box) / |p_target - p_box|` (horizontal)
-- Pure translation: push line must pass through the box CoM (contact on the face opposite `d`). A sideways contact offset induces yaw; steer by shifting contact laterally or with unequal hand forces, closed-loop on box yaw error
-- Current box (1 m cube, 5 kg, mu = 0.5): sliding needs `F ~ mu*m*g ~ 25 N` (plan 30-35 N). Slides before tipping if `mu*h < 0.5 m`, push at ~0.5-0.7 m height
-
-### Phases
-| Phase | Walking cmd | Hands |
-|---|---|---|
-| Approach | P-control to pre-push pose (heading along `d`, standoff = reach + margin), error in body frame -> `cmd_lin_vel`, `cmd_yaw_rate` | Arm posture PD |
-| Reach | Step in place | Hand sites to contact points, slightly inside the face |
-| Push | Slow walk along `d` (0.1-0.2 m/s) + heading correction | Track contact points on the box (from box pose, every tick) |
-| Release | Stop at pose tolerance, step back | Back to posture |
-
-### Controller changes
-1. **Hand task in WBC:** position task on `right_hand` / `left_hand` (Pinocchio `OP_FRAME`), replaces arm posture PD during Reach/Push
-2. **Contact force:** impedance, target `delta` inside the surface so `F ~ K_hand * delta` (e.g. K = 900, delta ~ 4 cm -> ~35 N). Later: explicit hand-force variable in the QP
-3. **Push force in WBC dynamics:** add `J_hand^T f_hand` to the floating-base rows, otherwise tasks fight an unmodeled ~30 N force
-4. **Push force in ALIP:** hand force adds `(p_hand - p_stance) x f_hand` to `L_dot` (forward push: `Ly_dot += -z_h F`). Add as affine term `x+ = A_d x + B u + d_F` so the MPC leans into the box (CoM offset ~ `F z_h / (m g)`)
-
-## High-Level Planner (future)
-Hierarchical RL-MPC following *Where to Touch, How to Contact* (Xie et al.): RL predicts a **contact intention** (contact point(s) on the object + post-contact subgoal pose), a low-level MPC realizes it through contact.
-
-| Layer | Paper | This stack |
-|---|---|---|
-| High level (where to touch) | RL -> contact keypoint(s) + subgoal | Same, ~0.2-1 Hz |
-| Between contacts | Lift, move in free space, approach | Walk to pre-contact pose (Approach/Reach) |
-| Low level (how to contact) | ComFree-MPC on object + end-effector | Box + hands manipulation MPC -> hand targets + base velocity, ~100 Hz |
-| Execution | Arm impedance control (OSC) | WBC hand impedance tasks + ALIP-MPC / yaw planners for legs |
-
-- Policy is embodiment-agnostic (object-frame contacts + subgoals): train in a box-only sim with 1-2 abstract point pushers, deploy on the humanoid without simulating walking during RL
-- Hand impedance matches the paper's end-effector model (force = stiffness x commanded displacement)
-
-### Build order
-1. `ContactIntention` interface: contact points (box frame) + subgoal pose (or position/orientation cost weights)
-2. Heuristic high level (placeholder): contact on face opposite target direction, subgoal = target capped to a max step
-3. Push executor: intention -> hand targets, `cmd_lin_vel`, `cmd_yaw_rate`. Base follows hands: box velocity + gain on hand offset from nominal reach (body frame). Later: ComFree-style MPC
-4. Push-force term in ALIP prediction (`d_F`), since the robot is balancing (no counterpart in the paper)
-5. Abstract training env (box + floor + point pushers) with object-frame observations (keypoints, goal flow, clearance)
-
-### Design choices
-- 1 vs 2 contacts: pick one face keypoint and place both hands symmetric about it (`n = 1`), avoids the combinatorial action space
-- Keypoints on the 4 vertical faces, collision term excludes the bottom / wall-blocked faces
-- Penalize contact switches (each one means walking around the box) or include base pose relative to the box in the observation
-
-
-## Residual RL
-- Tie this model based controller into previous work with Residual RL
-- Instead of just adding residuals to the action space, also modify upstream model parameters
-   - z_H (Nominal CoM Height)
-   - Ts (Nominal Step Duration)
-   - Bounds on Step Locations?
-   - WBC Params (Kp's, Kd's, Task Weights)?
+## Residual RL (future)
+Combine this model-based controller with learning: besides adding corrections to the
+actions, let the policy tune model settings such as CoM height `z_H`, step time `T_s`,
+step limits and WBC gains/weights.
 
 ## Notes
-
-- The Pinocchio model is built off of the MuJoCo
-  directly via `pin.buildModelsFromMJCF`.
-- MuJoCo and Pinocchio use different quaternion orderings
-  (`[w,x,y,z]` vs `[x,y,z,w]`); configurations are converted at the boundary.
+- The Pinocchio model is built from the MuJoCo file (`pin.buildModelsFromMJCF`).
+- MuJoCo and Pinocchio order quaternions differently (`[w,x,y,z]` vs `[x,y,z,w]`) and store
+  the base velocity in different frames; both are converted in `env.py`.

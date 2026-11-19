@@ -50,6 +50,7 @@ class DebugVisualizer:
         self.add_sphere(pos, radius=0.04, rgba=(1.0, 0.2, 0.8, 0.7))   # magenta
 
     def add_com(self, pos):
+        pos = np.array(pos, dtype=float)   # copy: don't write into the caller's (Pinocchio's) array
         pos[2] = 0.0
         self.add_sphere(pos, radius=0.04, rgba=(1.0, 0, 0, 1.0)) # red
 
