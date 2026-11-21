@@ -644,22 +644,22 @@ fingertips through coupling springs. The plan combines the two:
 \section{Parameters}
 %=======================================================================
 \begin{center}
-\begin{tabular}{lll}
+\begin{tabular}{ll}
 \toprule
-Symbol & Value & Source\\
+Symbol & Value\\
 \midrule
-$m$ & 14.0 kg & Pinocchio model\\
-$z_H$ & 1.23 m & \code{Z\_H}\\
-$T_s$ & 0.30 s & \code{STEP\_DURATION}\\
-$\ell$ & 2.824 s$^{-1}$ & $\sqrt{g/z_H}$\\
-$H$ & 4 & \code{H}\\
-$W$ & 0.20 m & \code{STEP\_WIDTH}\\
-$T_r$, freeze & 4 ms, $0.85T_s$ & \code{REPLAN\_*}\\
-$\mu$ (foot) & 1.0 & \code{MU}\\
-$\Delta t$ & 1 ms & MuJoCo timestep\\
-$m_b$, $\mu_b$, $a$ & 8 kg, 0.5, 0.75 m & \code{box.xml}\\
-$\hat m_b$, $\hat\mu_b$ & 8 kg, 0.5 & \code{BOX\_*\_EST}\\
-$h_p$, $s$ & 0.9 m, 0.5 m & \code{run.py}\\
+$m$ & 14.0 kg\\
+$z_H$ & 1.23 m\\
+$T_s$ & 0.30 s\\
+$\ell=\sqrt{g/z_H}$ & 2.824 s$^{-1}$\\
+$H$ & 4\\
+$W$ & 0.20 m\\
+$T_r$, freeze & 4 ms, $0.85T_s$\\
+$\mu$ (foot) & 1.0\\
+$\Delta t$ & 1 ms\\
+$m_b$, $\mu_b$, $a$ & 8 kg, 0.5, 0.75 m\\
+$\hat m_b$, $\hat\mu_b$ & 8 kg, 0.5\\
+$h_p$, $s$ & 0.9 m, 0.5 m\\
 \bottomrule
 \end{tabular}
 \end{center}
