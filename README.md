@@ -33,6 +33,8 @@ Every control tick (1 ms) the controller does three things:
 | `env.py`       | MuJoCo wrapper (robot state, box state, hand contact forces) |
 | `constants.py` | Shared settings (step time, CoM height, box estimates, ...) |
 | `debug_viz.py` | Debug markers in the viewer |
+| `logger.py`    | Records data during a run |
+| `plot_log.py`  | Plots a saved run log |
 | `xml_files/`   | Robot, box and scene models |
 
 ## Setup and run
@@ -44,6 +46,22 @@ mjpython run.py     # mjpython is needed for the viewer on macOS
 
 Change the walking command in `run.py` (`cmd_lin_vel` = forward/sideways speed,
 `cmd_yaw_rate` = turning speed).
+
+### Logs, plots and videos
+Each run saves its data when it ends (close the viewer or press Ctrl+C):
+- `logs/run.npz`: foot forces, hand forces, box velocity and box tracking error (every 10 ms)
+- `logs/run_sagittal.mp4`, `logs/run_top_down.mp4`: videos from the two fixed cameras
+  (turn off with `RECORD = False` in `run.py`)
+
+Make the plots from the last run:
+
+```bash
+python plot_log.py                       # show the plots (default file: logs/run.npz)
+python plot_log.py logs/run.npz --save   # also save them as PNGs in logs/
+```
+
+To update the plots, run the sim again, then rerun `plot_log.py`. Each run overwrites `logs/run.*`;
+change `LOG_PATH` in `run.py` to keep an old run.
 
 ## Walking
 
@@ -214,6 +232,22 @@ touch** the box and **where the box should go next**; the box pose controller ab
 it out. `intention.py` already has the interface (`ContactIntention`) and a simple
 hand-written placeholder (`HeuristicIntentionPlanner`). The paper's success test:
 position error < 5 cm and rotation distance `1 − ⟨q_box, q_goal⟩² < 0.03`.
+
+## Known issues
+Found while writing the technical notes (`docs/technical_notes.tex`):
+- **Missing `J̇_G q̇` in the CoM height task.** The task uses `data.acom[0][2]` as `J̇_G,z q̇`, but
+  neither `computeAllTerms` nor `centerOfMass(q)` fills `acom`, so it stays zero. A random-state test
+  gave `J̇_G q̇ = (2.05, −3.25, 0.42) m/s²` against `0` from the code.
+  Fix: call `pin.centerOfMass(model, data, q, dq, 0*dq)` before reading `acom`.
+- **Pre- vs post-impact reference.** The position entries of `x_ref` are end-of-stance (pre-impact)
+  values, but they are compared with post-impact predictions. Check by logging `x⁺` against `x_ref`,
+  or by flipping the signs of the `x_c, y_c` references. Note that the steady-state foot placement then
+  changes. Walking probably works anyway because the momentum errors dominate the cost.
+- **Stale comment.** `solve_mpc` says `Q` penalizes only `(L_x, L_y)`, but `Q` also weights `(x_c, y_c)` with 2.1.
+- **Steering authority.** With hand spacing `s = 0.5 m` the hands cannot rotate the box in place within
+  `f_max = 60 N`.
+- **Large lean.** `Δx_c = h_p F / (m g) = 0.26 m`, because the box mass is a large fraction of the
+  robot mass (8 kg vs 14 kg).
 
 ## Issues solved
 - ✅ ~~WBC lagged behind the stepping trajectory~~ → separate gains for each WBC task

@@ -72,11 +72,12 @@ def main():
     axs[0].plot(t, d["hand_fn_planned_left"], "--", color=C_LEFT, lw=1, label="left planned")
     axs[0].set_ylabel("normal force (N)")
     axs[0].legend(loc="upper right", ncol=4)
-    axs[1].plot(t, np.linalg.norm(d["hand_force_right"], axis=1), color=C_RIGHT, label="right |F|")
-    axs[1].plot(t, np.linalg.norm(d["hand_force_left"], axis=1), color=C_LEFT, label="left |F|")
-    axs[1].set_ylabel("|F| (N)")
+    for f, c, name in ((d["hand_force_right"], C_RIGHT, "right"), (d["hand_force_left"], C_LEFT, "left")):
+        axs[1].plot(t, f[:, 0], color=c, label=f"{name} F_x")
+        axs[1].plot(t, f[:, 1], color=c, ls=":", label=f"{name} F_y")
+    axs[1].set_ylabel("measured (N)")
     axs[1].set_xlabel("time (s)")
-    axs[1].legend(loc="upper right", ncol=2)
+    axs[1].legend(loc="upper right", ncol=4)
     figs["hand_forces"] = fig
 
     # --- 3. box velocity ---
@@ -85,9 +86,8 @@ def main():
     v, w = d["box_vel"], d["box_omega"]
     axs[0].plot(t, v[:, 0], color=C_RIGHT, label="v_x")
     axs[0].plot(t, v[:, 1], color=C_LEFT, label="v_y")
-    axs[0].plot(t, np.linalg.norm(v[:, :2], axis=1), color=C_3, label="speed")
     axs[0].set_ylabel("m/s")
-    axs[0].legend(loc="upper right", ncol=3)
+    axs[0].legend(loc="upper right", ncol=2)
     axs[1].plot(t, w[:, 2], color=C_RIGHT, label="yaw rate ω_z")
     axs[1].set_ylabel("rad/s")
     axs[1].set_xlabel("time (s)")
@@ -100,10 +100,8 @@ def main():
     e = d["box_pos_err"]
     axs[0].plot(t, e[:, 0], color=C_RIGHT, label="x")
     axs[0].plot(t, e[:, 1], color=C_LEFT, label="y")
-    axs[0].plot(t, d["box_pos_err_norm"], color=C_3, label="distance")
-    axs[0].axhline(0.05, color=INK, lw=0.8, ls=":")       # paper's 5 cm success threshold
     axs[0].set_ylabel("position (m)")
-    axs[0].legend(loc="upper right", ncol=3)
+    axs[0].legend(loc="upper right", ncol=2)
     axs[1].plot(t, np.degrees(d["box_yaw_err"]), color=C_RIGHT)
     axs[1].set_ylabel("yaw (deg)")
     axs[2].plot(t, d["box_vel_err"], color=C_RIGHT)

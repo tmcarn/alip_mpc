@@ -4,6 +4,8 @@
 \usepackage{booktabs}
 \usepackage{hyperref}
 \usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
 \hypersetup{colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black}
 
 \newtheorem{assumption}{Assumption}
@@ -44,61 +46,154 @@
 \maketitle
 
 \begin{abstract}
-These notes give the mathematical formulation of the controller in this repository: a
-footstep planner based on the angular-momentum linear inverted pendulum (ALIP) solved as a
-quadratic program (QP), a quadratic-programming whole-body controller (WBC) on the full
-floating-base dynamics, and a two-handed box-pushing layer whose planned contact force is
-fed forward into both the WBC dynamics and the ALIP prediction. Each section states the model,
-its assumptions, and the equations as implemented, with pointers to the source. The
-proposed (not yet implemented) box pose controller is formulated in
-Section~\ref{sec:boxpose}. Section~\ref{sec:issues} lists discrepancies found while
-writing these notes.
+
 \end{abstract}
 
 \tableofcontents
 
 %=======================================================================
-\section{Notation and frames}
+\section{System overview}\label{sec:overview}
 %=======================================================================
+The goal of this project is whole-body loco-manipulation on a humanoid: the robot must walk up to a large
+object (currently a box), make contact with its hands, and push it to a goal pose in $SE(3)$ while staying balanced.
+The task mixes two kinds of decisions:
 \begin{itemize}
-  \item $\mathcal{W}$: world frame, $z$ up, gravity $-g\,\bm{e}_z$, $g=9.81\,$m/s$^2$.
-  \item $\mathcal{S}$: \emph{stance frame}. Origin at the stance foot $\p_{st}\in\R^3$, axes
-        rotated from $\mathcal{W}$ by the measured stance-foot yaw $\psi_{st}$ only:
-        $\Rot_{st}=\Rot_z(\psi_{st})$, $\psi_{st}=\atantwo(R_{21},R_{11})$ of the foot rotation.
-        Because the rotation is yaw-only, $\bm{e}_z$ is shared by $\mathcal{W}$ and $\mathcal{S}$.
-  \item $\mathcal{B}$: box frame, pose $(\p_b,\Rot_b)\in SE(3)$, twist $(\bm{v}_b,\bm{\omega}_b)$
-        both expressed in $\mathcal{W}$.
-  \item $\q\in\R^{n_q}$, $\qd\in\R^{n_v}$: Pinocchio configuration and velocity, $n_v=24$
-        ($6$ floating base $+\,18$ actuated). The base linear and angular velocity are both
-        expressed in the base (local) frame.
-  \item $\wrap(\theta)=\atantwo(\sin\theta,\cos\theta)\in(-\pi,\pi]$.
-  \item $\skewm{\bm a}\bm b=\bm a\times\bm b$.
+  \item \textbf{Discrete, long-horizon decisions}: where to touch the object, when to let go and touch somewhere
+        else, and which intermediate pose the object should reach next.
+  \item \textbf{Continuous, short-horizon control}: where to place the next footstep, how hard each hand should
+        push, and which joint torques realize all of this without falling or slipping.
 \end{itemize}
+These are handled by separate layers. Each layer runs at its own rate and passes a small, well-defined quantity to
+the layer below it. The controller of Gibson et al.~\cite{gibson2022} provides the locomotion core. This work
+extends it with hand-contact forces and puts a contact planner on top.
 
-\begin{remark}[Simulator/model conversion, \code{env.py}]
-MuJoCo stores the free-joint quaternion as $(w,x,y,z)$, the linear velocity in $\mathcal{W}$ and the
-angular velocity in the body frame. Pinocchio expects $(x,y,z,w)$ and both velocities in the body
-frame, so \code{convert\_dq} applies $\bm v_{base}=\Rot_{base}^\top\bm v^{\mathcal{W}}$. The box free
-joint follows the same convention, and the controller uses $\bm\omega_b^{\mathcal W}=\Rot_b\,\bm\omega_b^{\mathcal B}$.
-\end{remark}
+\subsection{Control hierarchy}
+\begin{center}
+\begin{tikzpicture}[
+    node distance=6mm,
+    blk/.style={draw, rounded corners, align=center, minimum width=9.5cm, minimum height=9mm, font=\small},
+    prop/.style={blk, dashed, fill=orange!8},
+    impl/.style={blk, fill=blue!5},
+    arr/.style={-{Stealth}, thick},
+    lab/.style={font=\scriptsize, align=left, right=2pt}]
+  \node[prop] (hl)  {\textbf{High-level contact planner} (proposed, Sec.~\ref{sec:hlplanner})\\
+                     contact points $\cc_h^{\mathcal B}$, normals $\n_h^{\mathcal B}$, object subgoal $(\p_b^{sg},\Rot_b^{sg})$};
+  \node[prop, below=of hl] (bp) {\textbf{Box pose controller / push executor} (Sec.~\ref{sec:push}, \ref{sec:boxpose})\\
+                     hand forces $\f_h$, walking command $(v_x,v_y,\dot\psi_{cmd})$};
+  \node[impl, below=of bp] (mpc) {\textbf{ALIP-MPC footstep planner} (Sec.~\ref{sec:alip}, \ref{sec:alipforce})\\
+                     next footstep $\uu_0$, replanned every $T_r$ within the step};
+  \node[impl, below=of mpc] (ref) {\textbf{Task-space references and PD} (Sec.~\ref{sec:taskref}, \ref{sec:pd})\\
+                     desired task accelerations $\bm a_i^{des}$};
+  \node[impl, below=of ref] (wbc) {\textbf{Whole-body QP} (Sec.~\ref{sec:wbc})\\
+                     joint torques $\btau$ at $1\,$kHz};
+  \node[blk, below=of wbc, minimum width=4cm] (sim) {Robot + box (MuJoCo)};
+  \draw[arr] (hl) -- (bp);
+  \draw[arr] (bp) -- (mpc);
+  \draw[arr] (mpc) -- (ref);
+  \draw[arr] (ref) -- (wbc);
+  \draw[arr] (wbc) -- (sim);
+  \draw[arr, dashed] (sim.east) -- ++(5.2,0) |- node[lab, pos=0.25] {robot state,\\box pose,\\hand forces} (hl.east);
+\end{tikzpicture}
+\end{center}
+Blue boxes are implemented. Dashed orange boxes are proposed or only partly working. From top to bottom:
+\begin{enumerate}
+  \item \textbf{High-level contact planner} (event-driven, once per contact phase). It chooses a \emph{contact
+        intention}: one contact point per hand on the object surface and a subgoal pose that the object should reach
+        while those contacts are held. A hand-written heuristic stands in for it at the moment
+        (\code{HeuristicIntentionPlanner} in \code{intention.py}). The goal is to replace it with a learned policy.
+  \item \textbf{Box pose controller / push executor} (every control step). It turns the intention into
+        (i) the planned hand forces $\f_h$ needed to move the box toward the subgoal, (ii) hand position targets that
+        realize those forces through depth admittance, and (iii) a walking command that keeps the torso behind the
+        hands. 
+        
+        \textbf{Currently:} the contacts and push direction are fixed, and only the open-loop force planner works
+        (Section~\ref{sec:push}).
+  \item \textbf{ALIP-MPC} (once per foot step, re-solved every $T_r$ during the step). It picks footstep locations that track
+        the commanded velocity. The planned hand forces enter its dynamics as the moment $\btau$ about the stance foot,
+        and the reference orbit is shifted so the robot leans into the push (Section~\ref{sec:alipforce}).
+  \item \textbf{Task-space references and PD} (every control step). These interpolate swing-foot, torso and hand
+        trajectories between the discrete MPC outputs and turn tracking errors into desired accelerations.
+  \item \textbf{Whole-body QP} ($1\,$kHz). It solves for $(\qdd,\blam)$ subject to the floating-base dynamics with the
+        \emph{planned} hand forces, friction and torque limits, then recovers the torques $\btau$.
+\end{enumerate}
+
+\paragraph{One shared hand force.} The planned hand force $\f_h$ is the main link between manipulation and locomotion.
+The same value is used (a) as the force set-point of the depth-admittance loop, (b) as a known external wrench in the WBC
+dynamics~\eqref{eq:fbdyn}, and (c) as the disturbance moment $\btau$ in the ALIP-MPC~\eqref{eq:pushtau}. Because all
+three agree, the footstep planner already expects the push, the WBC already compensates for it, and the hands are
+regulated to produce it.
+
+\paragraph{Separation of concerns.} The ALIP-MPC never reasons about the task. It sees only a velocity command and
+a predicted external moment. The contact planner never reasons about balance or footsteps. It sees only object poses
+and contact locations. This keeps every layer small: the MPC remains a dense QP with $2H$ variables, and the planner's
+action space stays low-dimensional, which makes it suitable for learning.
+
+\subsection{High-level contact planner (proposed)}\label{sec:hlplanner}
+\paragraph{Motivation.} With fixed contacts, the robot can only push the box along a direction that the chosen face
+supports. A large heading change, or a goal behind or beside the box, cannot be reached from a single face within the
+hand force limits: with hand spacing $s=0.5\,$m the hands cannot rotate the box in place within $f_{\max}=60\,$N. The robot must release the box, walk to a new
+side, and touch it again. Choosing these contacts is a discrete, long-horizon problem that the continuous layers below
+are not designed to solve.
+
+\paragraph{Approach.} Following \emph{Where to Touch, How to Contact} (Xie et al.~\cite{xie}), the high-level action
+is a contact intention
+\begin{equation}
+  \mathcal I=\big(\cc_r,\,\cc_l,\ \n_r,\,\n_l,\ \p_b^{sg},\,\Rot_b^{sg}\big),
+  \label{eq:intention}
+\end{equation}
+where $\cc_i$ is the contact position, and $\n_i$ is the normal vector of contact $i$, and $\p_b^{sg},\,\Rot_b^{sg}\big)$ are the desired position and orientation of the object after these contacts. 
+This intention represets where to touch the object (from the contact points and outward normals in the object frame) and \emph{what the
+object should do} after contact (a subgoal pose in the world frame). To keep the action space small and discrete, the
+contact points will be chosen from a fixed grid of keypoints sampled on the faces of the box
+The planner observes the current object pose, the final goal pose and the robot state, and outputs~\eqref{eq:intention}.
+The low-level stack executes the intention using the MPC-WBC formulation. The planner does not choose footsteps, forces or torques.
+
+\paragraph{Execution of one contact phase.}
+\begin{enumerate}
+  \item \textbf{Plan.} Query the planner for $\mathcal I$ given the current object pose and the final goal.
+  \item \textbf{Approach.} Walk to a stand-off pose behind the selected contacts, facing the contact face. This is
+        plain velocity tracking with the ALIP-MPC (the hands carry no force, so $\btau=\zero$).
+  \item \textbf{Engage.} Move the hands to $\cc_h$ and ramp the planned force $\f_h$ up from zero, so that the MPC
+        moment $\btau$ and the orbit shift $(\Delta x_c,\Delta y_c)$ grow smoothly rather than jumping.
+  \item \textbf{Push.} The box pose controller drives the object toward $(\p_b^{sg},\Rot_b^{sg})$: it chooses the
+        hand force split and the walking command, and the ALIP-MPC and WBC carry them out.
+  \item \textbf{Release.} When the subgoal is reached, or progress stalls, ramp $\f_h$ down to zero, lift the hands
+        off, and return to step 1. The task ends when the final goal is reached.
+\end{enumerate}
+
+\paragraph{Intermediate Step} Before implementing the RL policy to output these intentions, I want to build a  simple planner that outputs the same contact intentions using first principles. 
+
+\paragraph{Open questions.}
+\begin{itemize}
+  \item \textbf{Training.} Train the policy with RL in simulation with the full low-level stack in the loop (slow, but
+        it learns what the controller can actually do), or with a cheaper surrogate of the push dynamics first. Will need to parallelize MPC controller in order to run in RL training
+  \item \textbf{Feasibility.} Only intentions the low level can execute should be offered: contact heights within arm
+        reach (push at about $1.35\,$m), sliding before tipping ($\mu_b h<$ half width), and subgoals reachable within the
+        hand force limits. These can be enforced by masking the action set or learned through the reward.
+  \item \textbf{Contact switching.} When contact is made or released, the step in $\btau$ changes the MPC equilibrium
+        $\bar\x$ (Section~\ref{sec:shift}). Ramping the force over one or two steps should keep the footstep planner
+        within its reach constraint $\bar u$.
+\end{itemize}
 
 %=======================================================================
 \section{ALIP model}\label{sec:alip}
 %=======================================================================
+\subsection{Related Work}
+Locomotion controller inspired by Gibson et al paper \cite{gibson_terrain-adaptive_2022}
+
 \subsection{Continuous dynamics}
-Let $m$ be the total robot mass ($14.0\,$kg, from \code{pin.computeAllTerms}) and $z_H$ a constant CoM
-height ($z_H=1.23\,$m, \code{constants.Z\_H}). The ALIP state, expressed in $\mathcal{S}$, is
+The ALIP state is
 \begin{equation}
   \x=\begin{bmatrix}x_c & y_c & L_x & L_y\end{bmatrix}^\top,
 \end{equation}
 where $(x_c,y_c)$ is the horizontal CoM position relative to the stance foot and
-$\bm L=(L_x,L_y)$ is the horizontal angular momentum \emph{about the contact point}:
+$\bm L=(L_x,L_y)$ is the horizontal angular momentum about the contact point:
 \begin{equation}
-  \bm L^{\mathcal W}_{c}=\bm L_{G}+\bm r\times m\,\bm v_G,\qquad \bm r=\p_G-\p_{st},
+  \bm L_{c}=\bm L_{G}+\bm r\times m\,\bm \dot{\p}_{G},\qquad \bm r=\p_{G}-\p_{st},
   \label{eq:Lcontact}
 \end{equation}
-with $\bm L_G$ the centroidal angular momentum (\code{data.hg.angular}). Both $\bm r$ and $\bm L_c$
-are rotated into $\mathcal S$ by $\Rot_{st}^\top$ (\code{get\_ALIP\_state}).
+with $\bm L_G$ the centroidal angular momentum and $\bm p_G$ is the position of the CoM in the world frame and $\bm p_{st}$ is the position of the stance foot. Both $\bm r$ and $\bm L_c$
+are rotated into the inertial frame, $\mathcal S$ of the robot, by $\Rot_{st}^\top$.
 
 \begin{assumption}[ALIP]\label{as:alip}
 (i) The CoM height is constant, $z_G\equiv z_H$. (ii) The stance contact is a point: the
@@ -122,7 +217,7 @@ Together, these give the linear system
   \label{eq:alipA}
 \end{equation}
 The sagittal pair $(x_c,L_y)$ and the lateral pair $(y_c,L_x)$ decouple. With
-$\ell=\sqrt{g/z_H}$ ($=2.824\,$s$^{-1}$), the sagittal flow is
+$\ell=\sqrt{g/z_H}$, the sagittal flow is
 \begin{equation}
   \begin{bmatrix}x_c(t)\\L_y(t)\end{bmatrix}=
   \begin{bmatrix}\cosh\ell t & \frac{\sinh\ell t}{m z_H\ell}\\ m z_H\ell\sinh\ell t & \cosh\ell t\end{bmatrix}
@@ -132,8 +227,8 @@ $\ell=\sqrt{g/z_H}$ ($=2.824\,$s$^{-1}$), the sagittal flow is
 and the lateral flow has the same form with $(x_c,L_y)\to(y_c,-L_x)$.
 
 \subsection{Step-to-step map}
-The step duration $T_s=0.30\,$s is fixed. Define $A_d=e^{AT_s}$ (\code{scipy.linalg.expm}).
-At touchdown the swing foot lands at $\uu=(u_x,u_y)$ relative to the old stance foot (in $\mathcal S$).
+The step duration, $T_s$ is fixed. The descretized inter-step dynamics can be written as $A_d=e^{AT_s}$.
+At touchdown, the swing foot lands at $\uu=(u_x,u_y)$ relative to the old stance foot (in $\mathcal S$).
 The CoM position is re-measured from the new foot, and $\bm L_c$ is continuous at impact
 under the point-contact, no-impulse assumption, because the new contact passes through the
 same horizontal plane:
@@ -155,7 +250,8 @@ post-impact state of step $k$ to that of step $k+1$:
 \end{equation}
 
 \subsection{Horizon prediction}
-Stack $\bU=(\uu_0,\dots,\uu_{H-1})\in\R^{2H}$ and $\bm X=(\x_1,\dots,\x_H)\in\R^{4H}$, with $H=4$. Iterating
+For a prediction horizon of $H$ footsteps, the states and inputs are stacked into 
+$\bU=(\uu_0,\dots,\uu_{H-1})\in\R^{2H}$ and $\bm X=(\x_1,\dots,\x_H)\in\R^{4H}$. Iterating
 \eqref{eq:dstep}:
 \begin{equation}
   \bm X=\Phi\,\x_0+\Gamma\,\bU,\qquad
@@ -164,39 +260,42 @@ Stack $\bU=(\uu_0,\dots,\uu_{H-1})\in\R^{2H}$ and $\bm X=(\x_1,\dots,\x_H)\in\R^
   \quad(i,j=0,\dots,H-1).
   \label{eq:stack}
 \end{equation}
-(\code{make\_phi}, \code{make\_gamma}.) Block row $i$ of $\bm X$ is the post-impact state after $i+1$ steps.
+Block row $i$ of $\bm X$ is the post-impact state after $i+1$ steps.
 
-\subsection{QP}
+\subsection{QP-MPC Formulation}
 \begin{equation}
 \begin{aligned}
-  \min_{\bU}\ \ & (\bm X-\bm X_{ref})^\top Q\,(\bm X-\bm X_{ref})+r\,\|\bU\|^2\\
+  \min_{\bU}\ \ & (\bm X-\bm X_{ref})^\top Q\,(\bm X-\bm X_{ref})+R\,\|\bU\|^2\\
   \text{s.t.}\ \ & -\bar u\le u_{x,k}\le\bar u,\\
   & \sigma_k\,u_{y,k}\in[\,w_{\min},\ \bar u\,],\qquad \sigma_k=\sigma_0(-1)^k,
 \end{aligned}
 \label{eq:mpcqp}
 \end{equation}
-where $Q=\I_H\otimes\mathrm{diag}(2.1,2.1,1,1)$, $r=10^{-4}$, $\bar u=0.8\,$m and
-$w_{\min}=0.15\,$m. $\sigma_0=+1$ when the stance foot is the right foot, so the swing foot must land
-on its own side, which prevents leg crossing. Substituting \eqref{eq:stack} gives a dense QP in $\bU$:
+where $Q$ is the penalty weight for state tracking error, and $R$ is the penalty weight for large control inputs (stride length), 
+and constraints are placed on the the maximum stride length $\bar u$ relative to the stance foot.
+An additional contraint is placed on the minimum stride width $w_{\min}$ to ensure that the swing foot does not collide with the stance foot. 
+$\sigma_k=\sigma_0(-1)^k$ is used to switch the bounds on the minimum width to account for the gate changes. 
+Substituting \eqref{eq:stack} gives a dense QP in $\bU$:
 \begin{equation}
   P=2(\Gamma^\top Q\Gamma+r\I),\qquad \bm q=2\Gamma^\top Q\,(\Phi\x_0+\bm D_F-\bm X_{ref}),
 \end{equation}
 where $\bm D_F$ is the external-force offset of Section~\ref{sec:alipforce} ($\bm D_F=\zero$ without a push).
-$P$ and $\bm q$ are scaled by $\max|P_{ij}|$ before calling quadprog. Only $\uu_0$ is applied. The
+$P$ and $\bm q$ are scaled by $\max|P_{ij}|$ before solving to ensire positive definiteness. Only $\uu_0$ is applied. The
 ridge term $r$ is required: the last input $\uu_{H-1}$ affects only $(x_c,y_c)$ of $\x_H$ through $B$,
 so without $r$, $P$ can be ill-conditioned.
 
 \subsection{Reference orbit}\label{sec:orbit}
-\paragraph{Sagittal.} Seek a period-one orbit with $L_y(0)=L_y(T_s)=L^\star$ and
-$x_c(0)=-x_c(T_s)$, that is, a symmetric gait. From \eqref{eq:flow}:
+\paragraph{Sagittal.} A periodic reference orbit for the alip state is generated with $L_y(0)=L_y(T_s)=L^\star$ and
+$x_c(0)=-x_c(T_s)$, ensuring a symmetric gait. From \eqref{eq:flow}:
 \begin{equation}
   x_c(T_s)(1+\cosh\ell T_s)=\frac{\sinh\ell T_s}{m z_H\ell}L^\star
   \ \Rightarrow\
   x_c(T_s)=\frac{\tanh(\ell T_s/2)}{m z_H\ell}\,L^\star.
   \label{eq:xcorbit}
 \end{equation}
-The code sets $L^\star=L_{y,des}=m z_H v_x$, with $v_x$ the commanded forward speed in $\mathcal S$.
-\paragraph{Lateral (in-place sway).} For step width $W$ ($=0.2\,$m) and stance side $\sigma$,
+The desired reference orbit is a function of the model parameters as well as the commanded forward and lateral body velocity.
+ $L^\star=L_{y,des}=m z_H v_x$, with $v_x$ the commanded forward speed in $\mathcal S$.
+\paragraph{Lateral (in-place sway).} For step width $W$ and stance side $\sigma$,
 the zero-net-velocity orbit of \cite{gibson2022} (Eq.~17) is
 \begin{equation}
   y_{c,des}=\tfrac12\sigma W,\qquad L_{x,des}=\tfrac12\sigma\,m z_H\ell W\tanh(\ell T_s/2).
@@ -214,54 +313,69 @@ blocks in \eqref{eq:stack} are \emph{post}-impact states, where the orbit has $x
 $y_c=-\tfrac12\sigma W$. $\bm L$ is continuous at impact, so the momentum entries are consistent either way.
 With the present weights the momentum errors dominate the cost numerically ($m z_H v_x\approx 8.6\,$kg\,m$^2$/s at
 $0.5\,$m/s against position errors of order $0.1\,$m), which may explain why walking works regardless.
-See Section~\ref{sec:issues}.
+See Section~\ref{sec:nextsteps}.
 \end{remark}
 
 \subsection{Intra-step re-planning}
-Every $T_r=4\,$ms during the step, up to $t\le 0.85\,T_s$, the QP is re-solved from the measured state $\x(t)$
+In order to account for mid-step disturbanced, every $T_r$ms during the step, up to $t\le 0.85\,T_s$, the QP-MPC is re-solved from the current measured state $\x(t)$
 \cite{gibson2022}. The end-of-step prediction is $\x(T_s^-)=e^{A(T_s-t)}\x(t)$. Because $\Phi$ assumes a full
 $T_s$ before the first impact, the code back-propagates the state:
 \begin{equation}
   \x_0'=e^{-At}\x(t)\quad\Rightarrow\quad A_d\x_0'=e^{A(T_s-t)}\x(t),
 \end{equation}
 which is exact for the linear model. The swing trajectory then keeps its start point and timing and only
-updates its target (\code{SwingTrajectory.update\_target}).
+updates its swing foot target.
 
 \subsection{Frame handling and turning}
-The QP is solved in $\mathcal S$. The input is rotated back, $\uu^{\mathcal W}=\Rot_{st}\,[\uu;0]$, and the
-landing target is $\p_{st}+\uu^{\mathcal W}$ with height $0.05\,$m. For a yaw-rate command $\dot\psi_{cmd}$ the
-heading advances by $\Delta\psi=\dot\psi_{cmd}T_s$ per step:
+The QP-MPC footstep planner is limited to tracking only forward/backward and lateral velocities. There is no turning capabilities. 
+
+In order to track a commanded yaw-velocity, in adition to linear velocity, the yaw-rate command $\dot\psi_{cmd}$ is integrated on every step 
+to get a desired yaw heading.
+Since the QP is solved in the inertial frame of the robot, the footstep input is then rotated back to the world frame, $\uu^{\mathcal W}=\Rot_{st}\,[\uu;0]$, and the
+rotated landing target is determined in the world frame: $\p_{st}+\uu^{\mathcal W}$. 
+
+In addition to rotating the footstep positions based on the heading, the feet and the torso themselves must also be rotated in order to maintain 
+the kinematics in the inertial frame for the MPC remain consistent. 
+
+For a yaw-rate command $\dot\psi_{cmd}$ the heading advances by $\Delta\psi=\dot\psi_{cmd}T_s$ per step:
 \begin{align}
   \psi_{foot}^{land,(k)}&=\psi_{foot}^{land,(k-1)}+\Delta\psi, \\
   \psi_{torso}^{(k)}(T_s)&=\psi_{frame}^{(k)}+\tfrac12\Delta\psi,
 \end{align}
-where $\psi_{frame}$ is the planned heading of the current stance foot (\code{torsotraj.py}).
+where $\psi_{frame}$ is the planned heading of the current stance foot. 
+
 
 %=======================================================================
 \section{External force in the ALIP}\label{sec:alipforce}
 %=======================================================================
 \subsection{Augmented dynamics}
-Let the hands exert forces $\f_h$ on the robot at points $\cc_h$ ($h\in\{r,l\}$). The moment of these forces
+Extending from the Gibson paper, which focused soley on locomotion, the goal of this project is to extend the controller to a loco-manipulation 
+controller. Naturally, this means that there will be other contact forces in addition to the ground reaction forces exherted on the robot.
+
+In order to ensure stability during this extra forces, they must be accounted for both in the forward dynamics of the ALIP model, 
+as well as counteracted in the reference trajectories. 
+
+The hands of the robot exert forces $\f_h$ on the robot at points $\cc_h$ ($h\in\{r,l\}$). The moment of these forces
 about the stance foot,
 \begin{equation}
   \btau^{\mathcal W}=\sum_h(\cc_h-\p_{st})\times\f_h,\qquad
   \btau=[\Rot_{st}^\top\btau^{\mathcal W}]_{x,y}\in\R^2,
   \label{eq:pushtau}
 \end{equation}
-enters the angular momentum balance. The vertical component of $\btau^{\mathcal W}$ does not enter the planar ALIP.
+enters the angular momentum balance. 
+The vertical component of $\btau^{\mathcal W}$ does not enter the planar ALIP.
 \begin{equation}
   \dot\x=A\x+E\btau,\qquad E=\begin{bmatrix}\zero_{2\times2}\\ \I_2\end{bmatrix}.
   \label{eq:affine}
 \end{equation}
 \begin{assumption}\label{as:consttau}
-$\btau$ is constant over each step and over the horizon. It is evaluated with the \emph{planned} hand forces
+We assume $\btau$ is constant over each step and over the horizon. It is evaluated with the desired planned hand forces
 and contact points (Section~\ref{sec:push}), not with measurements.
 \end{assumption}
 
 \subsection{Exact discretization}
 For constant $\btau$, $\x(t)=e^{At}\x(0)+\Gamma_t\btau$ with $\Gamma_t=\int_0^t e^{As}\,ds\,E$. Here $A$ is invertible ($\det A=g^2/z_H^2$), so
-$\Gamma_t=A^{-1}(e^{At}-\I)E$ would also work. The code instead uses Van Loan's augmented exponential, which needs
-no inverse and is better conditioned:
+$\Gamma_t=A^{-1}(e^{At}-\I)E$ would also work. 
 \begin{equation}
   \exp\!\left(\begin{bmatrix}A&E\\ \zero&\zero\end{bmatrix}t\right)=
   \begin{bmatrix}e^{At}&\Gamma_t\\ \zero&\I\end{bmatrix}.
@@ -269,8 +383,7 @@ no inverse and is better conditioned:
 \end{equation}
 The step map becomes $\x_{k+1}=A_d\x_k+B\uu_k+\bm d_F$ with $\bm d_F=\Gamma_{T_s}\btau$. The horizon offset is
 \begin{equation}
-  \bm D_F=\begin{bmatrix}\bm d_F\\ A_d\bm d_F+\bm d_F\\ \vdots\\ \sum_{k=0}^{H-1}A_d^k\bm d_F\end{bmatrix}
-  \qquad(\code{force\_offset}),
+  \bm D_F=\begin{bmatrix}\bm d_F\\ A_d\bm d_F+\bm d_F\\ \vdots\\ \sum_{k=0}^{H-1}A_d^k\bm d_F\end{bmatrix},
 \end{equation}
 so $\bm X=\Phi\x_0+\Gamma\bU+\bm D_F$.
 \paragraph{Mid-step.} The end-of-step prediction from $\x(t)$ is $e^{A(T_s-t)}\x(t)+\Gamma_{T_s-t}\btau$. The first
@@ -280,6 +393,8 @@ block of the stacked model gives $A_d\x_0'+\Gamma_{T_s}\btau$, so the two agree 
 \end{equation}
 
 \subsection{Orbit shift}\label{sec:shift}
+In addition to changing the forward dynamics to account for the additional forces, 
+it is also necessary to counteract these forces in the generated reference orbit.
 The affine system \eqref{eq:affine} has the equilibrium $\bar\x$ with $A\bar\x+E\btau=0$:
 \begin{equation}
   \bar L_x=\bar L_y=0,\qquad \bar x_c=-\frac{\tau_y}{mg},\qquad \bar y_c=\frac{\tau_x}{mg}.
@@ -300,59 +415,42 @@ step reach $\bar u$.
 \end{remark}
 
 %=======================================================================
-\section{Task-space references}
+\section{Task-space references}\label{sec:taskref}
 %=======================================================================
-\paragraph{Swing foot (\code{swingtraj.py}).} With $s=\clip(t/T_s,0,1)$ and $\beta(s)=\tfrac12(1-\cos\pi s)$:
+While the MPC solver outputs discrete target footstep locations, we still must define a trajectory to 
+get the foot from its current position to its target position. The same is true for the torso and feet orientation as well.
+
+\paragraph{Swing Foot Trajectory} 
+In order to generate a smooth trajectory for the swing foot, we use a cosine-blended x-y interpolation 
+so that the lift off and touch down of the swing foot have zero velocity to prevent stance foot slippage. 
+The z-height of the foot is determined by a separate cosine function for smooth lift off and landing with a maximum clearance of $h_{cl}$. 
+Both of these interpolations are parameterized by $s=\clip(t/T_s,0,1)$ where $s=0$ at lift off and $s=1$ at touchdown. 
+and $\beta(s)=\tfrac12(1-\cos\pi s)$:
 \begin{align}
   \p_{sw,xy}(t)&=(1-\beta)\p^0_{xy}+\beta\,\p^{*}_{xy}, &
   \dot\p_{sw,xy}&=\tfrac{\pi}{2T_s}\sin(\pi s)\,(\p^*_{xy}-\p^0_{xy}),\\
   p_{sw,z}(t)&=p^0_z+h_{cl}\sin\pi s, &
   \dot p_{sw,z}&=\tfrac{\pi h_{cl}}{T_s}\cos\pi s,
 \end{align}
-with clearance $h_{cl}=0.1\,$m. The yaw uses the same $\beta$, so $\dot\psi_{sw}(T_s)=0$. Note that
+The yaw uses the same $\beta$, so $\dot\psi_{sw}(T_s)=0$. Note that
 $\dot p_{sw,z}(T_s)=-\pi h_{cl}/T_s\neq0$: the foot reaches the ground moving down.
 \paragraph{Torso yaw.} Linear ramp from the measured yaw at impact to $\psi_{frame}+\tfrac12\Delta\psi$, with constant
 $\dot\psi_{torso}$.
 \paragraph{Touchdown detection.} A step ends when $t\ge0.6\,T_s$ and $p_{sw,z}\le0.06\,$m, or unconditionally at $t\ge1.4\,T_s$.
 
-%=======================================================================
-\section{Whole-body controller}\label{sec:wbc}
-%=======================================================================
-\subsection{Dynamics with known hand forces}
-\begin{equation}
-  M(\q)\qdd+\bm h(\q,\qd)=S^\top\btau+\J_{st}^\top\blam+\sum_{h}\J_h^\top\f_h,
-  \label{eq:fbdyn}
-\end{equation}
-where $\bm h=C\qd+\bm g$, $S=[\zero\ \I]$ selects the actuated joints, $\J_{st},\J_h\in\R^{3\times n_v}$ are the
-\code{LOCAL\_WORLD\_ALIGNED} linear Jacobians of the stance foot and hands, $\blam\in\R^3$ is the stance
-contact force (point contact, world frame), and $\f_h$ are the \emph{planned} hand forces on the robot
-(Section~\ref{sec:push}, zero when a hand is not engaged).
+\begin{remark}
+Determining touchdown in this way is extremely naive and not deployable on any physical system. 
+For deployment, this should be determined by observing the estimated ground contact forces. 
+\end{remark}
 
-\subsection{QP}
-The decision variable is $\bm z=(\qdd,\blam)\in\R^{n_v+3}$:
-\begin{equation}
-\begin{aligned}
-  \min_{\bm z}\ \ & \sum_{i} w_i\,\big\|\J_i\qdd+\dot\J_i\qd-\bm a_i^{des}\big\|^2+w_{reg}\|\qdd\|^2+\epsilon\|\blam\|^2\\
-  \text{s.t.}\ \ & M_{f}\qdd-\J_{st,f}^\top\blam=-\bm h_f+\textstyle\sum_h\J_{h,f}^\top\f_h
-     && \text{(floating-base rows of \eqref{eq:fbdyn})}\\
-  & \J_{st}\qdd+\dot\J_{st}\qd=\zero && \text{(stance foot fixed)}\\
-  & \lambda_z\ge0,\quad |\lambda_x|,|\lambda_y|\le\tfrac{\mu}{\sqrt2}\lambda_z && \text{(inner friction pyramid)}\\
-  & \big|M_a\qdd+\bm h_a-\J_{st,a}^\top\blam-\textstyle\sum_h\J_{h,a}^\top\f_h\big|\le\btau_{\max}
-     && \text{(torque limits)}
-\end{aligned}
-\label{eq:wbcqp}
-\end{equation}
-The subscripts $f$ and $a$ denote the first $6$ and the last $n_v-6$ rows (or columns of $\J$), and $\mu=1$.
-The inner pyramid with $\mu/\sqrt2$ is a conservative inscribed approximation of the friction cone. The torques are recovered
-from the actuated rows:
-\begin{equation}
-  \btau=\big[M\qdd^\star+\bm h-\J_{st}^\top\blam^\star-\textstyle\sum_h\J_h^\top\f_h\big]_a .
-\end{equation}
-Because only the floating-base rows are imposed as constraints, every $\qdd$ in the feasible set is
-dynamically consistent for some $\btau$, and the torque-limit rows ensure that $\btau$ is admissible.
+\section{PD Tracking}\label{sec:pd}
+The WBC used to track the reference position/velocity trajectories can only track task-space accelerations. 
+As a result, PD controllers are used to generate desired accelerations for each tasks. 
 
-\subsection{Tasks}
-All tasks use PD on the error, $\bm a^{des}=K_p\bm e+K_d\dot{\bm e}$ (\code{pd\_control}):
+One advantage of this is that the stiffness and damping for each task can be independently tuned. For the feet tracking, 
+they should be able to react quickly and accelerate in order to maintain stability so they have much lower stiffness than the torso orientation task, which should move when necessary but not make large, jerky movements.   
+
+All tasks use PD on the error, $\bm a^{des}=K_p\bm e+K_d\dot{\bm e}$:
 \begin{center}
 \begin{tabular}{llllll}
 \toprule
@@ -373,36 +471,76 @@ angular Jacobian. For small errors, $\Log(\Rot^{des}\Rot^\top)\approx\bm\theta^{
 uses $-K_d\dot z_G$, that is, a zero velocity reference.
 
 %=======================================================================
+\section{Whole-body controller}\label{sec:wbc}
+%=======================================================================
+In order to turn the task space accelerations into joint torques that are realizable for the robot actuators, we require a whole body controller.
+To solve this problem, we use an additional QP optimization to solve for the ideal joint accelerations, $\ddot{q}$ and contact forces, $\lambda$ at each simulation step. 
+Lastly $\ddot{q}$ and $\lambda$ are plugged into the full-order EOM \ref{eq:fbdyn} to solve for $\tau$
+
+However, since there are multiple desired task-space accelerations, the objective becomes a weighted sum of each sub-objective were
+larger weights are placed on the more cruicial tasks such as swing-foot placement and torso-height. 
+
+Constraints are also added to this formulation in order to ensure that torque limits and kinematic limits are not exceeded. 
+There are also friction cone contraints to ensure no slipping for the stance foot or hands. As well as a constraint to make sure the stance foot 
+has no velocity. 
+
+\subsection{Dynamics with known hand forces}
+\begin{equation}
+  M(\q)\qdd+\bm h(\q,\qd)=S^\top\btau+\J_{st}^\top\blam+\sum_{h}\J_h^\top\f_h,
+  \label{eq:fbdyn}
+\end{equation}
+where $\bm h=C\qd+\bm g$, $S=[\zero\ \I]$ selects the actuated joints, $\J_{st},\J_h\in\R^{3\times n_v}$ are the
+linear Jacobians of the stance foot and hands, $\blam\in\R^3$ is the stance
+contact force (point contact, world frame), and $\f_h$ are the \emph{planned} hand forces on the robot
+(Section~\ref{sec:push}, zero when a hand is not engaged).
+
+\subsection{QP Formulation}
+The decision variable is $\bm z=(\qdd,\blam)\in\R^{n_v+3}$:
+\begin{equation}
+\begin{aligned}
+  \min_{\bm z}\ \ & \sum_{i} w_i\,\big\|\J_i\qdd+\dot\J_i\qd-\bm a_i^{des}\big\|^2+w_{reg}\|\qdd\|^2+\epsilon\|\blam\|^2\\
+  \text{s.t.}\ \ & M_{f}\qdd-\J_{st,f}^\top\blam=-\bm h_f+\textstyle\sum_h\J_{h,f}^\top\f_h
+     && \text{(floating-base rows of \eqref{eq:fbdyn})}\\
+  & \J_{st}\qdd+\dot\J_{st}\qd=\zero && \text{(stance foot fixed)}\\
+  & \lambda_z\ge0,\quad |\lambda_x|,|\lambda_y|\le\tfrac{\mu}{\sqrt2}\lambda_z && \text{(inner friction pyramid)}\\
+  & \big|M_a\qdd+\bm h_a-\J_{st,a}^\top\blam-\textstyle\sum_h\J_{h,a}^\top\f_h\big|\le\btau_{\max}
+     && \text{(torque limits)}
+\end{aligned}
+\label{eq:wbcqp}
+\end{equation}
+The subscripts $f$ and $a$ denote the first $6$ and the last $n_v-6$ rows (or columns of $\J$).
+The inner pyramid with $\mu/\sqrt2$ is a conservative inscribed approximation of the friction cone. The torques are recovered
+from the actuated rows:
+\begin{equation}
+  \btau=\big[M\qdd^\star+\bm h-\J_{st}^\top\blam^\star-\textstyle\sum_h\J_h^\top\f_h\big]_a .
+\end{equation}
+Because only the floating-base rows are imposed as constraints, every $\qdd$ in the feasible set is
+dynamically consistent for some $\btau$, and the torque-limit rows ensure that $\btau$ is admissible.
+
+%=======================================================================
 \section{Box pushing (implemented)}\label{sec:push}
 %=======================================================================
 \subsection{Box model}
-The box is a rigid cube of half-size $a=0.75\,$m and mass $m_b$, sliding on the floor with Coulomb
-coefficient $\mu_b$ (simulation: $m_b=8\,$kg, $\mu_b=0.5$; the controller's estimates are $\hat m_b$ and $\hat\mu_b$,
-\code{BOX\_MASS\_EST}, \code{BOX\_MU\_EST}). The planar dynamics under a hand wrench $(\bm F,M_z)$ on the box are
+The box is a rigid cube of half-size $a$m and mass $m_b$, sliding on the floor with Coulomb
+coefficient $\mu_b$
+The planar dynamics under a hand wrench $(\bm F,M_z)$ on the box are
 \begin{align}
   m_b\dot{\bm v}_b&=\bm F-\bm F_{fr}, &
   I_{b,z}\dot\omega_{b,z}&=M_z-M_{fr},
   \label{eq:boxdyn}
 \end{align}
-with $I_{b,z}=\tfrac{1}{6}m_b(2a)^2$, and $(\bm F_{fr},M_{fr})$ lying on the floor-friction limit surface
+with Moment of Intertia $I_{b,z}$, and $(\bm F_{fr},M_{fr})$ lying on the floor-friction limit surface
 (Section~\ref{sec:ls}).
 
 \subsection{Contact selection}
-Both hands go on the face whose outward normal $\n$ is most opposed to the push direction
-$\bm d$. The contacts are at height $h_p$ above the ground and symmetric about the push line
-through the center, at $\pm\tfrac12 s$ along the in-face horizontal axis (\code{hand\_push\_points}):
-\begin{equation}
-  \cc_h^{\mathcal B}=\cc_0^{\mathcal B}\pm\tfrac12 s\,\bm t^{\mathcal B},\qquad \n_h^{\mathcal B}=\n^{\mathcal B}.
-\end{equation}
-In \code{run.py}, $h_p=0.9\,$m and $s=0.5\,$m. The contacts are stored in $\mathcal B$, so they move with the box.
+Currently, the contacts, as well as the push direction are predefined.
 
-\subsection{Planned force}
-The force that sustains steady sliding plus a desired acceleration $a^{des}$ along $-\n$ is
+\subsection{Planned force (OPEN LOOP)}
+The force that sustains steady straight line sliding plus a desired acceleration $a^{des}$ along $-\n$ is
 \begin{equation}
   F^{des}=\hat\mu_b\hat m_b g+\hat m_b a^{des},\qquad F_h^{des}=\tfrac12F^{des}.
 \end{equation}
-The force \emph{on the robot} at hand $h$ while engaged is $\f_h=+F_h^{des}\,\n_h^{\mathcal W}$, with
-$\n_h^{\mathcal W}=\Rot_b\n_h^{\mathcal B}$: the box pushes back along its outward normal. This single planned quantity is used
+This single planned quantity is used
 in \eqref{eq:fbdyn}, \eqref{eq:wbcqp} and \eqref{eq:pushtau}.
 
 \subsection{Force realization by depth admittance}
@@ -429,90 +567,78 @@ contact point with rest length $\delta_h$, as in the coupling springs of the int
 despite unknown contact and arm stiffness.
 \end{remark}
 
-\subsection{Engagement}
-Hand $h$ engages when $\hat F_{n,h}\ge\tfrac12F_h^{des}$. It releases after $\hat F_{n,h}<0.1F_h^{des}$ has held for
-$0.3\,$s, roughly one step, which provides hysteresis against the per-step contact flicker. $\f_h$ is applied in the
-WBC and the MPC only while the hand is engaged.
-
 %=======================================================================
 \section{Box pose control (proposed)}\label{sec:boxpose}
 %=======================================================================
-\subsection{Planar grasp map}
-With pushing direction $\bm d_h=-\n_h^{\mathcal W}$ and normal-only, push-only contact forces
-$f_h\ge0$, the planar wrench on the box is
-\begin{equation}
-  \begin{bmatrix}\bm F\\M_z\end{bmatrix}=G\bm f,\qquad
-  G=\begin{bmatrix}\bm d_r&\bm d_l\\ m_r&m_l\end{bmatrix},\qquad
-  m_h=\big[(\cc_h-\p_b)\times\bm d_h\big]_z .
-  \label{eq:graspmap}
-\end{equation}
-For the symmetric contacts above, $m_{r,l}=\pm\tfrac12 s=\pm0.25\,$m. Because both $\bm d_h$ are parallel, $G$ has rank 2:
-the hands can produce a force along $\bm d$ and a yaw moment, but no force across $\bm d$. The pushing system is
-therefore non-holonomic in the plane, and lateral displacement must be produced by steering.
+In order to successfully track the desired box trajectory, the open loop force planner will not suffice.
+The plan is to close the loop at the \emph{object level}, following the object-level impedance controllers
+compared by Wimb\"ock et al.~\cite{wimbock2012}. The box is given a desired impedance (a spring-damper to its subgoal
+pose). The resulting box wrench is distributed over the hands through the grasp matrix, and the hand forces are then
+realized by the existing hand controllers.
 
-\subsection{Floor friction limit surface}\label{sec:ls}
-For uniform pressure $p=m_bg/(2a)^2$ over the footprint $\mathcal A$, the friction wrench for pure translation and
-pure rotation about the center is
-\begin{equation}
-  F_{\max}=\mu_bm_bg,\qquad
-  M_{\max}=\frac{\mu_bm_bg}{|\mathcal A|}\int_{\mathcal A}\|\bm\rho\|\,dA
-  =\mu_bm_bg\cdot\frac{2a}{6}\Big(\sqrt2+\ln(1+\sqrt2)\Big).
-\end{equation}
-For $a=0.75$ the mean radius is $0.574\,$m, so $F_{\max}=39.2\,$N and $M_{\max}=22.5\,$N\,m. For combined motion, a common
-approximation of the limit surface is the ellipsoid
-\begin{equation}
-  \Big(\frac{\|\bm F_{fr}\|}{F_{\max}}\Big)^2+\Big(\frac{M_{fr}}{M_{\max}}\Big)^2=1,
-  \qquad \frac{\bm v_b}{\omega_b}\parallel\Big(\frac{\bm F_{fr}}{F_{\max}^2},\ \frac{M_{fr}}{M_{\max}^2}\Big),
-\end{equation}
-where the twist is normal to the surface \cite{lynch1996}.
-\begin{remark}[Feasibility of steering]\label{rm:steer}
-Pure rotation requires $|f_r-f_l|=M_{\max}/0.25=90\,$N, which exceeds the planned per-hand force range
-($f_{\max}=60\,$N in the draft controller). Steering is therefore only feasible as combined translation and rotation
-along the limit surface, with small curvature $\omega_b/\|\bm v_b\|$. A wider hand spacing $s$ increases the moment arm
-linearly. This may be one reason the first draft (\code{BoxPoseController}) failed.
-\end{remark}
-
-\subsection{Steering law}
-With $\bm e_p=\p^{goal}-\p_b$ and $\psi_{\bm d}$ the heading of $\bm d$:
-\begin{equation}
-  e_\psi=b\,\wrap\!\big(\psi_{\bm d}-\angle\bm e_p\big)+(1-b)\,\wrap\!\big(\psi_b-\psi^{goal}\big),\qquad
-  b=\clip(\|\bm e_p\|/r_{bl},0,1).
-\end{equation}
 \subsection{Object-level impedance}
-The impedance is defined on the box (parallel structure, \cite{wimbock2012} Sec.~3.3), with feedforward friction
-compensation:
-\begin{align}
-  v^{des}&=\clip\!\big(K_v\,\bm e_p\!\cdot\bm d,\ 0,\ v_{\max}\big),\\
-  F&=\hat\mu_b\hat m_bg+\hat m_ba^{des}+D_v\big(v^{des}-\bm v_b\!\cdot\bm d\big),\\
-  M_z&=-K_\psi e_\psi-D_\psi\omega_{b,z}.
-\end{align}
-The damping is chosen for a damping ratio $\zeta$ from the effective inertia
-(\cite{wimbock2012} Eq.~9): $D_\psi=2\zeta\sqrt{K_\psi(I_{b,z}+I_{hand})}$, and similarly for the translational
-loop with $\hat m_b$.
-\subsection{Force distribution}
+The box moves in the plane, so its pose is $\bm x_b=(x_b,y_b,\psi_b)$ and its velocity is
+$\dot{\bm x}_b=(\bm v_b,\omega_{b,z})$. The subgoal $\bm x_b^{sg}$ comes from the contact intention
+(Section~\ref{sec:hlplanner}). The desired wrench on the box is a spring-damper plus a friction feed-forward:
 \begin{equation}
-\begin{aligned}
-  \min_{f_r,f_l}\ \ & (f_r+f_l-F)^2+w_M\,(m_rf_r+m_lf_l-M_z)^2+\epsilon(f_r^2+f_l^2)\\
-  \text{s.t.}\ \ & f_{\min}\le f_h\le f_{\max}.
-\end{aligned}
+  \bm w_b^{des}=K_b\,(\bm x_b^{sg}-\bm x_b)-D_b\,\dot{\bm x}_b+\hat{\bm w}_{fr},
+  \qquad K_b,D_b\in\R^{3\times3},
+  \label{eq:objimp}
 \end{equation}
-When no bound is active and $m_r\neq m_l$, the unique solution is
-$f_{r,l}=\tfrac12F\pm M_z/(m_r-m_l)$, i.e.\ $G^{-1}[F;M_z]$.
-\subsection{Base following}
-With the contact midpoint $\cc_{mid}$ and face normal $\n$:
-\begin{align}
-  \p_{torso}^{des}&=\cc_{mid}+d_{so}\,\n,\\
-  \bm v_{cmd}&=\big[\Rot_{torso}^\top\big(\bm v_{\cc}+K_{p,b}(\p_{torso}^{des}-\p_{torso})\big)\big]_{xy},\\
-  \dot\psi_{cmd}&=\omega_{b,z}+K_{\psi,b}\,\wrap(\psi_{\n}-\psi_{torso}),
-\end{align}
-where $\psi_{\n}$ is the heading of $-\n$. These commands replace \code{cmd\_lin\_vel} and \code{cmd\_yaw\_rate}.
+where $\hat{\bm w}_{fr}$ cancels the expected floor friction ($\hat\mu_b\hat m_b g$ along the direction of motion).
+Unlike the paper, the box pose does not have to be estimated from the fingertip kinematics or by integrating
+velocities, because it is measured in simulation. Following~\cite{wimbock2012}, the damping is not tuned by hand but
+computed from the stiffness and the inertia the impedance actually moves:
+\begin{equation}
+  D_b=\mathcal D\{M_b+M_h^b,\ K_b,\ \xi\},
+\end{equation}
+where $M_b$ is the box inertia, $M_h^b$ is the hand and arm inertia reflected to the box coordinates, and $\mathcal D$
+is the double-diagonalization damping design that gives the damping ratio $\xi$ along each principal direction. For a
+diagonal approximation this reduces to $D_{b,i}=2\xi\sqrt{K_{b,i}M_i}$. The paper's experiments show that the
+hand--object dynamics are not negligible during fast motion, which is the reason for including $M_h^b$ rather than only $M_b$.
 
-\subsection{Tipping}
-Taking moments about the leading bottom edge, a push at height $h_p$ tips the box before it slides when
-$F h_p>m_bga$ at $F=\mu_bm_bg$. The box therefore slides without tipping if and only if
+\subsection{Grasp matrix and force distribution}
+With contact point $\cc_h=\p_b+\bm r_h$, the grasp matrix $G$ maps the stacked forces that the hands apply to the box,
+$\bm f^b=(\bm f_r^b,\bm f_l^b)$, to the wrench at the box center (point contacts transmit forces only):
 \begin{equation}
-  \mu_bh_p<a\qquad(0.5\cdot0.9=0.45<0.75\ \checkmark).
+  \bm w_b=G\,\bm f^b,\qquad
+  G=\begin{bmatrix}\I & \I\\ \skewm{\bm r_r} & \skewm{\bm r_l}\end{bmatrix},
 \end{equation}
+restricted to the planar rows $(F_x,F_y,M_z)$. The paper's ``inversion of the grip map'' controller inverts this map
+and adds a parametrization of its null space (the internal forces):
+\begin{equation}
+  \bm f^b=G^+\bm w_b^{des}+E\,\bm f_{int},\qquad G\,E=\zero,
+  \label{eq:gripinv}
+\end{equation}
+where $G^+$ is a (weighted) pseudoinverse and the columns of $E$ are the internal forces, which squeeze the box without
+moving it. For two hands, $E$ is the single virtual-linkage direction $(\bm e_{rl},-\bm e_{rl})$ along the line between
+the hands. The planned forces on the robot are the reactions $\f_h=-\bm f_h^b$.
+
+\paragraph{Pushing is unilateral.} The paper assumes friction contacts with grasp forces large enough to avoid sliding.
+Here the hands can only push into the box, so \eqref{eq:gripinv} must also satisfy $\bm f_h^b=f_h\bm d_h$ with
+$f_h\ge f_{\min}$. With both hands on one face, only the force along the push direction and the yaw moment can be
+produced (the box is steered like a car), and there is no useful internal force. The minimum force $f_{\min}$, rather
+than a squeeze, keeps the hands on the box. When \eqref{eq:gripinv} violates these bounds, the forces are found by a
+small QP that minimizes $\|G\bm f^b-\bm w_b^{des}\|_W^2$ subject to them. Hands on different faces give $G$ full
+rank and a non-trivial $E$. Deciding when that is needed is the high-level planner's job.
+
+\subsection{Realizing the hand forces}
+The paper distinguishes \emph{parallel} controllers, where the object impedance and the internal forces are mapped
+to the actuators independently (the grip-map inversion above), from \emph{serial} controllers such as the
+intrinsically passive controller (IPC), where the object spring acts on a virtual object that is connected to the
+fingertips through coupling springs. The plan combines the two:
+\begin{itemize}
+  \item \textbf{Parallel at the object level.} \eqref{eq:objimp} and \eqref{eq:gripinv} give explicit per-hand forces
+        $\f_h$. This keeps the object impedance and the force limits easy to specify, and $\f_h$ can be passed on to the
+        MPC~\eqref{eq:pushtau} and the WBC~\eqref{eq:fbdyn} as a known feed-forward wrench.
+  \item \textbf{Coupling springs at the hands.} The depth-admittance loop of Section~\ref{sec:push} already acts like an
+        IPC coupling spring between each hand and a virtual contact point on the box (see the remark there). It is
+        reused with per-hand set-points $f_h=\|\f_h\|$ in place of the fixed equal split. As the paper argues for
+        impedance-based grasping, this keeps the hands well behaved when contact is lost or not yet made, which an
+        explicit force controller does not.
+
+\textbf{Ideally this will help smooth out the noise in the force tracking as well and make maintaining contact more consistent. }
+\end{itemize}
 
 %=======================================================================
 \section{Parameters}
@@ -539,25 +665,30 @@ $h_p$, $s$ & 0.9 m, 0.5 m & \code{run.py}\\
 \end{center}
 
 %=======================================================================
-\section{Issues found while writing these notes}\label{sec:issues}
+\section{Next steps}\label{sec:nextsteps}
 %=======================================================================
+
 \begin{enumerate}
-  \item \textbf{Missing $\dot\J_G\qd$ in the CoM height task.} The task uses \code{data.acom[0][2]} as
-        $\dot\J_{G,z}\qd$, but neither \code{computeAllTerms} nor \code{centerOfMass(q)} fills \code{acom}. It stays
-        zero. A random-state test gave $\dot\J_G\qd=(2.05,-3.25,0.42)\,$m/s$^2$ against $\zero$ from the code. Fix:
-        call \code{pin.centerOfMass(model, data, q, dq, 0*dq)} before reading \code{acom}.
-  \item \textbf{Pre- versus post-impact reference} (Remark~\ref{rm:prepost}). The position entries of
-        $\x_{ref}$ are end-of-stance values, but they are compared with post-impact predictions. Check by logging
-        $\x^+$ against $\x_{ref}$, or by flipping the signs of the $x_c,y_c$ references. Note that the steady-state
-        foot placement then changes.
-  \item \textbf{Stale comment.} \code{solve\_mpc} says that $Q$ penalizes only $(L_x,L_y)$, but $Q$ also weights
-        $(x_c,y_c)$ with 2.1.
-  \item \textbf{Steering authority} (Remark~\ref{rm:steer}). With $s=0.5\,$m the hands cannot rotate the
-        box in place within $f_{\max}=60\,$N.
-  \item \textbf{Large lean.} $\Delta x_c=h_pF/(mg)=0.26\,$m, because $m_b$ is a large fraction of $m$ ($8$ against $14\,$kg).
+  \item \textbf{Closed-loop box pose controller} (Section~\ref{sec:boxpose}). Replace the open-loop force plan with
+        feedback on the box pose: desired box wrench, hand force split under $f_{\min}\le f_h\le f_{\max}$, and a walking
+        command that keeps the torso behind the hands. Test in this order: straight push, goal off to the side
+        (steering), change of final heading.
+  
+  \item \textbf{Full contact-phase loop with the heuristic planner} (Section~\ref{sec:hlplanner}). Run
+        plan $\to$ approach $\to$ engage $\to$ push $\to$ release $\to$ re-plan with \code{HeuristicIntentionPlanner},
+        including walking to a different face. Success is the first end-to-end task that needs more than one face, such
+        as a large heading change.
+  \item \textbf{Learned high-level contact planner.} Replace the heuristic with an RL policy that outputs a
+        \code{ContactIntention} (keypoint contacts and subgoal pose), following~\cite{xie}. Mask infeasible intentions
+        (reach, tipping, force limits) and evaluate with the success criterion of Section~\ref{sec:hlplanner}.
+  \item \textbf{Contact-based touchdown detection.} Detect touchdown from estimated contact forces or joint torques
+        instead of foot height, for uneven ground and eventual deployment.
+  \item \textbf{Adaptive MPC (future).} Learn corrections on top of the model-based stack, and let the policy tune model
+        parameters such as $z_H$, $T_s$, step limits and WBC gains.
 \end{enumerate}
 
-\begin{thebibliography}{9}
+\bibliographystyle{plain}
+\bibliography{../references}
 \bibitem{gibson2022} G.~Gibson, O.~Dosunmu-Ogunbi, Y.~Gong, J.~Grizzle,
   ``Terrain-Aware Foot Placement for Bipedal Locomotion Combining Model Predictive Control,
   Virtual Constraints, and the ALIP,'' 2022. (Citation from memory; verify.)

@@ -1,0 +1,42 @@
+\contentsline {section}{\numberline {1}System overview}{2}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Control hierarchy}{2}{subsection.1.1}%
+\contentsline {paragraph}{One shared hand force.}{3}{section*.2}%
+\contentsline {paragraph}{Separation of concerns.}{3}{section*.3}%
+\contentsline {subsection}{\numberline {1.2}High-level contact planner (proposed)}{3}{subsection.1.2}%
+\contentsline {paragraph}{Motivation.}{3}{section*.4}%
+\contentsline {paragraph}{Approach.}{3}{section*.5}%
+\contentsline {paragraph}{Execution of one contact phase.}{4}{section*.6}%
+\contentsline {paragraph}{Intermediate Step}{4}{section*.7}%
+\contentsline {paragraph}{Open questions.}{4}{section*.8}%
+\contentsline {section}{\numberline {2}ALIP model}{4}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Related Work}{4}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Continuous dynamics}{5}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Step-to-step map}{5}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}Horizon prediction}{6}{subsection.2.4}%
+\contentsline {subsection}{\numberline {2.5}QP-MPC Formulation}{6}{subsection.2.5}%
+\contentsline {subsection}{\numberline {2.6}Reference orbit}{6}{subsection.2.6}%
+\contentsline {paragraph}{Sagittal.}{6}{section*.9}%
+\contentsline {paragraph}{Lateral (in-place sway).}{6}{section*.10}%
+\contentsline {subsection}{\numberline {2.7}Intra-step re-planning}{7}{subsection.2.7}%
+\contentsline {subsection}{\numberline {2.8}Frame handling and turning}{7}{subsection.2.8}%
+\contentsline {section}{\numberline {3}External force in the ALIP}{7}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Augmented dynamics}{7}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Exact discretization}{8}{subsection.3.2}%
+\contentsline {paragraph}{Mid-step.}{8}{section*.11}%
+\contentsline {subsection}{\numberline {3.3}Orbit shift}{8}{subsection.3.3}%
+\contentsline {section}{\numberline {4}Task-space references}{9}{section.4}%
+\contentsline {paragraph}{Swing Foot Trajectory}{9}{section*.12}%
+\contentsline {paragraph}{Torso yaw.}{9}{section*.13}%
+\contentsline {paragraph}{Touchdown detection.}{9}{section*.14}%
+\contentsline {section}{\numberline {5}PD Tracking}{9}{section.5}%
+\contentsline {section}{\numberline {6}Whole-body controller}{10}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Dynamics with known hand forces}{10}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}QP Formulation}{10}{subsection.6.2}%
+\contentsline {section}{\numberline {7}Box pushing (implemented)}{11}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Box model}{11}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Contact selection}{11}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Planned force}{11}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}Force realization by depth admittance}{11}{subsection.7.4}%
+\contentsline {section}{\numberline {8}Box pose control (proposed)}{12}{section.8}%
+\contentsline {section}{\numberline {9}Parameters}{12}{section.9}%
+\contentsline {section}{\numberline {10}Next steps}{12}{section.10}%

@@ -1,7 +1,7 @@
 STEP_DURATION = 0.30  # seconds
 SCENE_PATH = "xml_files/scene.xml"
 ROBOT_PATH = "xml_files/humanoid_3D.xml"  # was biped_3d_5dof_leg.xml
-H = 4  # MPC horizon length
+H = 4  # MPC horizon length (number of footsteps)
 ACTUATOR_LIMIT = 50 # Nm  (unused for humanoid: per-joint limits come from the XML forcerange)
 STEP_WIDTH = 0.2 # m (from the stance foot)
 Z_H = 1.23 # m  (humanoid standing CoM is 1.31; biped used 1.20 vs 1.29 standing)
